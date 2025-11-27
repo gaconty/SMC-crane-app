@@ -107,6 +107,60 @@
                     }
                 ]
             }
+        },
+        {
+            "id": "liebherr_lr1160",
+            "model_name": "Liebherr LR1160",
+            "max_capacity_ton": 160.0,
+            "base_structure": {
+                "upper_mass_ton": 35.0,
+                "carbody_mass_ton": 0.0
+            },
+            "crawler_system": {
+                "track_mass_per_side_ton": 17.26,
+                "contact_length_m": 7.2,
+                "shoe_width_m": 1.0,
+                "track_gauge_m": 5.8
+            },
+            "counterweight_configs": [
+                {
+                    "name": "standard 62.3t",
+                    "total_mass_ton": 62.3,
+                    "radius_m": 4.72,
+                    "carbody_cwt_ton": 20.0
+                }
+            ],
+            "boom_system": {
+                "pivot_offset_x_m": 1.5,
+                "pivot_offset_z_m": 2.2,
+                "base_section": {
+                    "length_m": 7.0,
+                    "mass_ton": 4.55,
+                    "cg_percent": 0.45
+                },
+                "tip_section": {
+                    "length_m": 7.0,
+                    "mass_ton": 2.9,
+                    "cg_percent": 0.6
+                },
+                "inserts": [
+                    {
+                        "id": "3m",
+                        "length_m": 3.0,
+                        "mass_ton": 0.75
+                    },
+                    {
+                        "id": "6m",
+                        "length_m": 6.0,
+                        "mass_ton": 1.1
+                    },
+                    {
+                        "id": "11.7m",
+                        "length_m": 11.7,
+                        "mass_ton": 1.67
+                    }
+                ]
+            }
         }
     ]
 }

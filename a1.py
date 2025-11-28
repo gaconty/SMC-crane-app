@@ -2,8 +2,8 @@ import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-import matplotlib.cm as cm
-from matplotlib.colors import Normalize, LinearSegmentedColormap
+from matplotlib.colors import LinearSegmentedColormap, Normalize
+from matplotlib.path import Path
 
 # IMPORT MODULES
 from unified_data import get_crane_options, get_processed_specs, get_valid_boom_lengths
@@ -12,492 +12,459 @@ from mesh_engine import AdvancedMeshGenerator
 from solver_engine import SoilStructureSolver
 
 # CẤU HÌNH TRANG
-st.set_page_config(page_title="SMC Crane Analysis", layout="wide", page_icon="🏗️")
+st.set_page_config(page_title="SMC Crane Planner", layout="wide", page_icon="🏗️")
 
-# --- THEME COLORS ---
-COLOR_BG = '#F8FAFC'       
-COLOR_CARD = '#FFFFFF'     
-COLOR_TEXT_MAIN = '#0F172A' 
-COLOR_TEXT_SEC = '#475569'  
-COLOR_ACCENT = '#0369A1'    
+# --- STYLE COLORS ---
+COLOR_BG_APP = '#ffffff'
+COLOR_TEXT_MAIN = '#1e293b' # Slate 800
+COLOR_TEXT_SEC = '#64748b'  # Slate 500
+COLOR_ACCENT = '#0284c7'    # Sky 600
+COLOR_SAFE = '#16a34a'      # Green 600
+COLOR_DANGER = '#dc2626'    # Red 600
 
-COLOR_DATA_LINE = '#0284C7' 
-COLOR_DATA_FILL = '#BAE6FD' 
-COLOR_LIMIT = '#DC2626'     
-COLOR_MARKER = '#0C4A6E'    
-COLOR_GRID = '#334155'      
-
-# --- CSS STYLING ---
+# --- CSS ---
 st.markdown(f"""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
-    .stApp {{ background-color: {COLOR_BG}; font-family: 'Inter', sans-serif; }}
-    h1, h2, h3, h4, h5 {{ color: {COLOR_TEXT_MAIN} !important; font-family: 'Inter', sans-serif; }}
-    p, label, span {{ color: {COLOR_TEXT_SEC} !important; }}
+    @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
+    .stApp {{ background-color: #f8fafc; font-family: 'Roboto', sans-serif; color: {COLOR_TEXT_MAIN}; }}
     
-    div[data-testid="stVerticalBlockBorderWrapper"] > div {{
-        background-color: {COLOR_CARD};
-        border-radius: 12px;
-        border: 1px solid #E2E8F0;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-        padding: 20px;
+    div[data-testid="metric-container"] {{
+        background-color: white; border: 1px solid #e2e8f0; border-radius: 6px;
+        padding: 10px 15px; box-shadow: 0 1px 2px rgba(0,0,0,0.03);
     }}
-
-    .header-title {{ 
-        font-size: 1.1rem; 
-        font-weight: 700; 
-        color: {COLOR_TEXT_MAIN}; 
-        margin-bottom: 15px; 
-        display: flex; 
-        align-items: center; 
-        gap: 8px; 
+    div[data-testid="metric-container"] label {{ font-size: 0.75rem; font-weight: 600; color: #64748b; }}
+    div[data-testid="metric-container"] div[data-testid="stMetricValue"] {{ font-size: 1.5rem; font-weight: 700; color: #0f172a; }}
+    
+    .info-panel {{
+        background: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 15px;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); height: 100%;
+    }}
+    .panel-title {{
+        font-size: 0.9rem; font-weight: 700; color: #334155; text-transform: uppercase;
+        border-bottom: 2px solid #f1f5f9; padding-bottom: 8px; margin-bottom: 12px;
+    }}
+    .track-row {{ display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 0.9rem; }}
+    .track-label {{ color: #64748b; font-weight: 500; }}
+    .track-val {{ color: #0f172a; font-weight: 700; font-family: 'Roboto Mono', monospace; }}
+    
+    .badge-mat {{
+        background: #fef3c7; color: #b45309; padding: 2px 6px; border-radius: 4px;
+        font-size: 0.7rem; font-weight: 700; border: 1px solid #fcd34d;
     }}
     
-    .kpi-box {{
-        text-align: center;
-        padding: 15px;
-        border-radius: 8px;
-        background-color: #FFFFFF;
-        border: 1px solid #E2E8F0;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    .slew-container {{
+        display: flex; align-items: center; justify-content: space-between;
+        background: white; padding: 10px; border-radius: 8px; border: 1px solid #e2e8f0;
     }}
-    .kpi-label {{ font-size: 0.85rem; color: {COLOR_TEXT_SEC}; font-weight: 600; text-transform: uppercase; }}
-    .kpi-value {{ font-size: 1.6rem; color: {COLOR_TEXT_MAIN}; font-weight: 800; margin-top: 5px; }}
-    
-    .status-badge {{
-        padding: 6px 12px;
-        border-radius: 20px;
-        font-weight: 700;
-        font-size: 0.85rem;
-        display: inline-block;
-    }}
-    .status-safe {{ background-color: #DCFCE7; color: #166534; border: 1px solid #86EFAC; }}
-    .status-danger {{ background-color: #FEE2E2; color: #991B1B; border: 1px solid #FCA5A5; }}
-
-    div[data-testid="stNumberInput"] {{ border: 1px solid #CBD5E1; border-radius: 8px; }}
-    div[data-testid="stNumberInput"] input {{ color: {COLOR_TEXT_MAIN}; font-weight: 600; }}
-    div[role="slider"] {{ background-color: {COLOR_DATA_LINE} !important; border-color: {COLOR_DATA_LINE} !important; }}
-    
-    .report-table {{ width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.9rem; }}
-    .report-table td {{ padding: 10px 12px; border-bottom: 1px solid #E2E8F0; color: {COLOR_TEXT_MAIN}; }}
-    .report-table td:first-child {{ font-weight: 600; color: {COLOR_TEXT_SEC}; width: 40%; background-color: #F8FAFC; }}
 </style>
 """, unsafe_allow_html=True)
 
-# --- LOGIC ---
 G_CONST = 9.81 
+
+# --- HÀM VẼ PRO (CAD STYLE + CLIPPING MASK FIX) ---
+
+def draw_pressure_profile_visual(specs, sol_res, mat_config, limit_p, mesh_obj=None, slew_angle=0):
+    """
+    Vẽ bản đồ áp lực.
+    Fix: Clipping Mask cho Heatmap (không bị lem), Carbody Layering.
+    """
+    # CAD Colors
+    C_STEEL = '#94a3b8'      
+    C_TRACK_OUTLINE = '#334155' 
+    C_MAT = '#f1f5f9'        
+    C_MAT_BORDER = '#94a3b8' 
+    C_DIM_LINE = '#64748b'   
+    
+    cmap = LinearSegmentedColormap.from_list("eng_grad", ["#ffffff", "#60a5fa", "#facc15", "#ef4444"])
+    norm = Normalize(vmin=0, vmax=limit_p * 1.1)
+
+    # Lấy thông số
+    gauge = specs['track_gauge']
+    trk_W = specs['track_W']
+    trk_L = specs['track_L']
+    
+    if mat_config['use_left']: L_L, W_L, is_mat_L = mat_config['L_left'], mat_config['W_left'], True
+    else: L_L, W_L, is_mat_L = trk_L, trk_W, False
+
+    if mat_config['use_right']: L_R, W_R, is_mat_R = mat_config['L_right'], mat_config['W_right'], True
+    else: L_R, W_R, is_mat_R = trk_L, trk_W, False
+
+    # --- SETUP FIGURE ---
+    max_W = max(W_L, W_R, trk_W)
+    limit_x = gauge/2 + max_W + 2.5
+    limit_y = max(L_L, L_R)/2 + 2.5
+    
+    ratio = limit_x / limit_y
+    fig_h = 8; fig_w = fig_h * ratio
+    
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor='white')
+    ax.set_aspect('equal')
+    ax.axis('off')
+    ax.set_xlim(-limit_x, limit_x); ax.set_ylim(-limit_y, limit_y)
+
+    # --- HELPERS ---
+    def draw_dim_arrow(p1, p2, text, offset=0, color=C_DIM_LINE):
+        x1, y1 = p1; x2, y2 = p2
+        ax.plot([x1, x1], [y1, y1+offset], color=color, lw=0.5, alpha=0.5)
+        ax.plot([x2, x2], [y2, y2+offset], color=color, lw=0.5, alpha=0.5)
+        ax.annotate("", xy=(x1, y1+offset), xytext=(x2, y2+offset),
+                    arrowprops=dict(arrowstyle='<->', color=color, lw=1.0, shrinkA=0, shrinkB=0))
+        mid_x, mid_y = (x1+x2)/2, y1+offset
+        bbox = dict(facecolor='white', edgecolor='none', pad=1, alpha=0.8)
+        is_vert = abs(x1-x2) < 0.1
+        rot = 90 if is_vert else 0
+        va = 'center' if is_vert else 'bottom'
+        ha = 'right' if is_vert else 'center'
+        txt_off = 0.1 if not is_vert else -0.1
+        ax.text(mid_x, mid_y + (0 if is_vert else txt_off), text, 
+                color=color, fontsize=8, rotation=rot, ha=ha, va=va, fontweight='bold', bbox=bbox)
+
+    # --- 1. VẼ CỤM CHÂN (TRACK + MAT) ---
+    def draw_foot(center_x, w_mat, l_mat, has_mat):
+        load = 0; eff_len = 0; eff_pct = 0
+        
+        # Tọa độ chính xác của hình chữ nhật cần clipping
+        x_min_clip, y_min_clip = center_x - w_mat/2, -l_mat/2
+        
+        # Tạo Clipping Path
+        clip_rect = patches.Rectangle((x_min_clip, y_min_clip), w_mat, l_mat, 
+                                    transform=ax.transData, fill=False, visible=False)
+        ax.add_patch(clip_rect)
+
+        # A. TẤM LÓT (Nền dưới cùng)
+        if has_mat:
+            rect = patches.Rectangle((x_min_clip, y_min_clip), w_mat, l_mat,
+                                   facecolor='#f8fafc', edgecolor='#cbd5e1', lw=1, hatch='///', alpha=0.5, zorder=1)
+            ax.add_patch(rect)
+            rect_border = patches.Rectangle((x_min_clip, y_min_clip), w_mat, l_mat,
+                                          facecolor='none', edgecolor='#94a3b8', lw=1, zorder=1)
+            ax.add_patch(rect_border)
+
+        # B. HEATMAP (Dùng pcolormesh và cắt chính xác)
+        if mesh_obj:
+            X_coords = mesh_obj.nodes_X[0, :]
+            Y_coords = mesh_obj.nodes_Y[:, 0]
+            
+            # Tính toán chỉ số lưới để lấy vùng áp lực
+            def find_nearest_idx(arr, val):
+                return np.argmin(np.abs(arr - val))
+
+            idx_x_min = find_nearest_idx(X_coords, x_min_clip)
+            idx_x_max = find_nearest_idx(X_coords, x_min_clip + w_mat)
+            idx_y_min = find_nearest_idx(Y_coords, y_min_clip)
+            idx_y_max = find_nearest_idx(Y_coords, y_min_clip + l_mat)
+            
+            # Cắt ma trận Z (áp lực)
+            Z_map = sol_res['pressure_map'][idx_y_min:idx_y_max, idx_x_min:idx_x_max] / G_CONST
+            
+            # Cắt tọa độ X và Y (cần N+1 điểm cho N ô lưới)
+            X_pcolor = X_coords[idx_x_min:idx_x_max+1]
+            Y_pcolor = Y_coords[idx_y_min:idx_y_max+1]
+            
+            # Đảm bảo kích thước Z khớp với X và Y
+            if Z_map.shape[0] > 0 and Z_map.shape[1] > 0:
+                ax.pcolormesh(X_pcolor, Y_pcolor, Z_map, 
+                              cmap=cmap, norm=norm, shading='flat', zorder=2)
+                
+                # Tính tải trọng
+                ps_all = sol_res['pressure_map'] / G_CONST
+                load_mask = (mesh_obj.nodes_X >= X_pcolor[:-1].min()) & (mesh_obj.nodes_X <= X_pcolor[:-1].max()) & \
+                            (mesh_obj.nodes_Y >= Y_pcolor[:-1].min()) & (mesh_obj.nodes_Y <= Y_pcolor[:-1].max()) & \
+                            (mesh_obj.active_mask)
+                load = np.sum(ps_all[load_mask]) * mesh_obj.dA
+                
+                # Tính hiệu quả tiếp xúc
+                contact_nodes_mask = load_mask & (ps_all > 0.1)
+                total_nodes = np.sum(load_mask)
+                                     
+                contact_area_nodes = np.sum(contact_nodes_mask)
+                
+                eff_pct = (contact_area_nodes / total_nodes * 100) if total_nodes > 0 else 0
+                eff_len = (contact_area_nodes * mesh_obj.dA) / w_mat if w_mat > 0 else 0
+
+        # C. XÍCH CẨU (Lớp trên cùng)
+        ax.add_patch(patches.Rectangle((center_x - trk_W/2, -trk_L/2), trk_W, trk_L,
+                                     facecolor='none', edgecolor=C_TRACK_OUTLINE, lw=2, zorder=10))
+        n_pads = 12
+        pad_step = trk_L / n_pads
+        for y in np.arange(-trk_L/2, trk_L/2, pad_step):
+            ax.plot([center_x - trk_W/2, center_x + trk_W/2], [y, y], color=C_TRACK_OUTLINE, lw=0.5, alpha=0.6, zorder=10)
+        ax.plot(center_x, trk_L/2 + 0.2, '^', color=C_TRACK_OUTLINE, ms=6, zorder=10)
+        ax.plot(center_x, -trk_L/2 - 0.2, 'v', color=C_TRACK_OUTLINE, ms=6, zorder=10)
+
+        # D. KÍCH THƯỚC
+        side = 1 if center_x > 0 else -1
+        draw_dim_arrow((center_x + (w_mat/2 + 0.5)*side, -l_mat/2), 
+                       (center_x + (w_mat/2 + 0.5)*side, l_mat/2), 
+                       f"{l_mat}m", offset=0.2*side)
+        draw_dim_arrow((center_x - w_mat/2, -limit_y + 0.8),
+                       (center_x + w_mat/2, -limit_y + 0.8),
+                       f"{w_mat}m", offset=-0.2)
+
+        return load, eff_len, eff_pct
+
+    # Vẽ Trái/Phải
+    l_L, e_L, pct_L = draw_foot(-gauge/2, W_L, L_L, is_mat_L)
+    l_R, e_R, pct_R = draw_foot(gauge/2, W_R, L_R, is_mat_R)
+
+    # --- 2. VẼ THÂN MÁY (CARBODY) ---
+    draw_dim_arrow((-gauge/2, limit_y - 0.8), (gauge/2, limit_y - 0.8), f"Gauge {gauge}m", offset=0.3)
+
+    beam_h = 0.4
+    ax.add_patch(patches.Rectangle((-gauge/2, -beam_h/2), gauge, beam_h, facecolor=C_STEEL, edgecolor='none', zorder=5))
+    
+    cb_w = gauge - trk_W - 1.0
+    cb_h = cb_w * 0.8 
+    if cb_h > trk_L * 0.6: cb_h = trk_L * 0.6
+    
+    rect_cb = patches.Rectangle((-cb_w/2, -cb_h/2), cb_w, cb_h, 
+                              facecolor='#f1f5f9', edgecolor=C_STEEL, lw=2, zorder=6)
+    ax.add_patch(rect_cb)
+    ax.plot([-cb_w/2, cb_w/2], [-cb_h/2, cb_h/2], color=C_STEEL, lw=1, alpha=0.3, zorder=6)
+    ax.plot([-cb_w/2, cb_w/2], [cb_h/2, -cb_h/2], color=C_STEEL, lw=1, alpha=0.3, zorder=6)
+
+    r_slew = min(cb_w, cb_h) * 0.4
+    ax.add_patch(patches.Circle((0,0), r_slew, facecolor='white', edgecolor=COLOR_ACCENT, lw=2, zorder=7))
+    
+    rad = np.radians(90 - slew_angle)
+    arr_len = r_slew * 0.8
+    ax.arrow(0, 0, arr_len*np.cos(rad), arr_len*np.sin(rad), 
+             head_width=r_slew*0.3, head_length=r_slew*0.3, fc='#0f172a', ec='none', zorder=8)
+    
+    cg_sz = r_slew * 0.25
+    ax.add_patch(patches.Wedge((0,0), cg_sz, 0, 90, fc='black', zorder=9))
+    ax.add_patch(patches.Wedge((0,0), cg_sz, 180, 270, fc='black', zorder=9))
+    ax.add_patch(patches.Circle((0,0), cg_sz, fill=False, ec='black', lw=1, zorder=9))
+
+    ax.text(0, -limit_y + 1.5, f"SLEW: {slew_angle}°", ha='center', fontsize=10, fontweight='bold', 
+            bbox=dict(facecolor='white', edgecolor='#e2e8f0', boxstyle='round,pad=0.3'))
+
+    # --- 3. LEGEND ---
+    cbar_w = gauge * 0.8; cbar_h = 0.3
+    cbar_x = -cbar_w/2; cbar_y = limit_y - 2.0
+    grad = np.linspace(0, 1, 256); grad = np.vstack((grad, grad))
+    ax.imshow(grad, aspect='auto', cmap=cmap, extent=[cbar_x, cbar_x+cbar_w, cbar_y, cbar_y+cbar_h], zorder=10)
+    ax.add_patch(patches.Rectangle((cbar_x, cbar_y), cbar_w, cbar_h, fill=False, edgecolor='#94a3b8', lw=0.5, zorder=11))
+    
+    ax.text(cbar_x, cbar_y+cbar_h+0.15, "0 t/m²", ha='center', fontsize=7, color='#64748b')
+    ax.text(cbar_x+cbar_w, cbar_y+cbar_h+0.15, f"{limit_p*1.1:.1f}", ha='center', fontsize=7, color=COLOR_DANGER, fontweight='bold')
+    ax.text(0, cbar_y+cbar_h+0.15, "GROUND PRESSURE", ha='center', fontsize=7, fontweight='bold', color='#334155')
+
+    return fig, l_L, l_R, e_L, e_R, pct_L, pct_R
+
+# --- HÀM VẼ POLAR PRO (Chi tiết hơn) ---
+def draw_polar_chart_pro(angles, p_values, current_slew, limit_p=30.0):
+    theta = np.radians(angles)
+    fig, ax = plt.subplots(figsize=(5, 5), subplot_kw={'projection': 'polar'}, facecolor='white')
+    ax.set_theta_zero_location("N")
+    ax.set_theta_direction(-1)
+    
+    # Grid đậm và chi tiết hơn
+    ax.grid(color='#cbd5e1', linestyle='-', linewidth=0.8, alpha=0.6)
+    
+    # Tự động điều chỉnh giới hạn R
+    r_max = max(np.max(p_values), limit_p) * 1.15
+    r_ticks = np.linspace(0, r_max, 5)[1:]
+    ax.set_rticks(r_ticks)
+    ax.set_yticklabels([f"{r:.1f}" for r in r_ticks], fontsize=7, color='#475569') # Thêm nhãn R
+    
+    # Safe Zone
+    ax.plot(theta, p_values, color=COLOR_ACCENT, lw=2.5, zorder=3)
+    ax.fill_between(theta, 0, p_values, color='#7dd3fc', alpha=0.8, zorder=2) # Tăng alpha
+    
+    # Limit Line
+    ax.plot(np.linspace(0, 2*np.pi, 360), [limit_p]*360, linestyle='--', color=COLOR_DANGER, lw=2, zorder=4)
+    
+    # Danger Zone
+    ax.fill_between(theta, limit_p, p_values, where=(p_values > limit_p), color='#fca5a5', alpha=0.9, zorder=3)
+
+    # Current Slew
+    cur_rad = np.radians(current_slew)
+    cur_val = np.interp(current_slew, angles, p_values)
+    ax.plot([cur_rad, cur_rad], [0, r_max], color='#334155', lw=2, zorder=10)
+    st_col = COLOR_DANGER if cur_val > limit_p else COLOR_SAFE
+    ax.plot(cur_rad, cur_val, 'o', color='white', markeredgecolor=st_col, markeredgewidth=3, ms=9, zorder=11)
+    
+    # Nhãn góc chi tiết hơn
+    ax.set_xticks(np.radians(np.arange(0, 360, 30)))
+    ax.set_xticklabels([f"{x}°" for x in np.arange(0, 360, 30)], fontsize=8, color='#475569', fontweight='bold')
+    
+    # Label cho trục R (Tấn/m2)
+    ax.text(np.radians(0), r_max * 1.05, "(t/m²)", ha='center', va='bottom', color='#64748b', fontsize=8)
+    
+    return fig
 
 @st.cache_data(show_spinner=False)
 def calculate_polar_profile(specs, load_mass, boom_angle, soil_ks, mat_config):
-    mesh_gen = AdvancedMeshGenerator(mesh_size=0.2) 
-    
-    max_L_sim = max(mat_config['L_left'] if mat_config['use_left'] else specs['track_L'],
-                    mat_config['L_right'] if mat_config['use_right'] else specs['track_L'])
-    max_dim = max(max_L_sim, specs['track_gauge']) * 2.5
-    mesh_gen.create_rectangular_mesh(max_dim, max_dim, default_Ks=soil_ks)
+    # Tăng số điểm quét từ 10 độ lên 5 độ để Polar mịn hơn
+    mesh_gen = AdvancedMeshGenerator(mesh_size=0.1) 
+    L_sim = specs['track_L']
+    if mat_config['use_left']: L_sim = max(L_sim, mat_config['L_left'])
+    if mat_config['use_right']: L_sim = max(L_sim, mat_config['L_right'])
+    mesh_gen.create_rectangular_mesh(L_sim*2.2, specs['track_gauge']*2.2, default_Ks=soil_ks)
     solver = SoilStructureSolver(mesh_gen)
     physics_engine = AdvancedCranePhysics(specs)
-
-    specs_L = specs.copy()
-    if mat_config['use_left']:
-        specs_L['track_L'] = mat_config['L_left']
-        specs_L['track_W'] = mat_config['W_left']
-    specs_R = specs.copy()
-    if mat_config['use_right']:
-        specs_R['track_L'] = mat_config['L_right']
-        specs_R['track_W'] = mat_config['W_right']
-
-    angles = np.arange(0, 360, 10) 
+    solve_specs = specs.copy()
+    if mat_config['use_left'] or mat_config['use_right']:
+        solve_specs['track_L'] = L_sim
+        solve_specs['track_W'] = max(specs['track_W'], mat_config.get('W_left',0), mat_config.get('W_right',0))
+    angles = np.arange(0, 360, 5) # 5 degree step
     p_max_values = []
-    
     for ang in angles:
         phys_angle = 90 - ang
         phys_res = physics_engine.calculate_state(load_mass, boom_angle, phys_angle)
-        
-        if phys_res['Mx_roll_Tm'] >= 0: current_specs = specs_R
-        else: current_specs = specs_L
-        
-        sol_res, _ = solver.solve_equilibrium(current_specs, phys_res, chassis_angle=0)
-        
+        sol_res, _ = solver.solve_equilibrium(solve_specs, phys_res, chassis_angle=0)
         val = sol_res['pressure_max'] / G_CONST if sol_res else 0
         p_max_values.append(val)
-
     angles = np.append(angles, 360)
     p_max_values = np.append(p_max_values, p_max_values[0])
     return angles, np.array(p_max_values)
 
-def draw_polar_chart_pro(angles, p_values, current_slew, limit_p=30.0):
-    theta = np.radians(angles)
-    fig, ax = plt.subplots(figsize=(7, 7), subplot_kw={'projection': 'polar'}, facecolor='none')
-    ax.set_facecolor('none') 
-    ax.set_theta_zero_location("N")
-    ax.set_theta_direction(-1)
-    
-    ax.grid(color=COLOR_GRID, linestyle='--', linewidth=1.0, alpha=0.6)
-    
-    ax.spines['polar'].set_visible(False)
-    ax.set_xticks(np.radians(np.arange(0, 360, 30)))
-    ax.set_xticklabels([f"{x}°" for x in np.arange(0, 360, 30)], color=COLOR_TEXT_SEC, fontsize=8, fontweight='bold')
-    
-    max_data = np.max(p_values)
-    limit_view = max(max_data, limit_p) * 1.15
-    if limit_view == 0: limit_view = 10
-    ax.set_ylim(0, limit_view)
-    
-    yticks = np.linspace(0, limit_view, 5)[1:] 
-    ax.set_yticks(yticks)
-    ax.set_yticklabels([f"{int(y)}" for y in yticks], color=COLOR_TEXT_SEC, fontsize=7)
-    ax.text(np.radians(0), limit_view*1.05, "(t/m²)", ha='center', va='bottom', color=COLOR_TEXT_SEC, fontsize=8)
-
-    # --- OVERLOAD ZONES HIGHLIGHT ---
-    theta_bar = theta[:-1]
-    val_bar = p_values[:-1]
-    overload_mask = val_bar > limit_p
-    
-    if np.any(overload_mask):
-        width_rad = 2 * np.pi / len(theta_bar)
-        ax.bar(theta_bar[overload_mask], 
-               [limit_view] * np.sum(overload_mask), 
-               width=width_rad, bottom=0, 
-               color='#FEE2E2', alpha=0.8, edgecolor='none', zorder=1)
-        ax.bar(theta_bar[overload_mask], 
-               [limit_view*0.02] * np.sum(overload_mask), 
-               width=width_rad, bottom=limit_view*0.98, 
-               color=COLOR_LIMIT, alpha=1.0, edgecolor='none', zorder=1)
-
-    # --- DATA LINES ---
-    ax.plot(theta, p_values, color=COLOR_DATA_LINE, linewidth=3.5, zorder=5, alpha=1.0)
-    ax.fill(theta, p_values, color=COLOR_DATA_FILL, alpha=0.6, zorder=2)
-    
-    theta_c = np.linspace(0, 2*np.pi, 100)
-    ax.plot(theta_c, np.full_like(theta_c, limit_p), linestyle='--', color=COLOR_LIMIT, linewidth=2.0, alpha=0.9, label='Limit')
-    
-    cur_rad = np.radians(current_slew)
-    cur_p = np.interp(current_slew, angles, p_values)
-    ax.plot([cur_rad, cur_rad], [0, limit_view], color=COLOR_TEXT_MAIN, linewidth=1.5, zorder=15)
-    
-    status_color = COLOR_LIMIT if cur_p > limit_p else COLOR_DATA_LINE
-    ax.plot(cur_rad, cur_p, 'o', ms=12, mfc='white', mec=status_color, mew=3.0, zorder=20)
-    
-    ax.text(0, -limit_view*0.2, f"{cur_p:.1f}", color=status_color, fontsize=24, fontweight='bold', ha='center')
-    ax.text(0, -limit_view*0.35, "t/m²", color=COLOR_TEXT_SEC, fontsize=10, ha='center')
-    return fig
-
-def draw_ground_pressure_map_pro(specs, phys_res, sol_res, mesh_gen, slew_angle, mat_config):
-    L_trk, W_trk = specs['track_L'], specs['track_W']
-    gauge = specs['track_gauge']
-    
-    L_L = mat_config['L_left'] if mat_config['use_left'] else L_trk
-    W_L = mat_config['W_left'] if mat_config['use_left'] else W_trk
-    L_R = mat_config['L_right'] if mat_config['use_right'] else L_trk
-    W_R = mat_config['W_right'] if mat_config['use_right'] else W_trk
-
-    X_grid, Y_grid, P_grid = mesh_gen.nodes_X, mesh_gen.nodes_Y, sol_res['pressure_map']
-    dA = mesh_gen.dA
-    mask_L = (X_grid < -0.1) & (P_grid > 0.001)
-    mask_R = (X_grid > 0.1) & (P_grid > 0.001)
-
-    def analyze(mask, L_ref):
-        if not np.any(mask): 
-            return {'p_top': 0, 'p_bot': 0, 'y_top': 0, 'y_bot': 0, 'len_pct': 0, 'len_m': 0}
-        y_act, p_act = Y_grid[mask], P_grid[mask]
-        eff_len = np.max(y_act) - np.min(y_act)
-        return {
-            'p_top': p_act[np.argmax(y_act)], 'p_bot': p_act[np.argmin(y_act)],
-            'y_top': np.max(y_act), 'y_bot': np.min(y_act),
-            'len_m': eff_len,
-            'len_pct': min((eff_len/L_ref)*100, 100)
-        }
-
-    dL, dR = analyze(mask_L, L_L), analyze(mask_R, L_R)
-    RL, RR = np.sum(P_grid[X_grid < 0]) * dA, np.sum(P_grid[X_grid > 0]) * dA
-
-    fig, ax = plt.subplots(figsize=(10, 10), facecolor='none')
-    ax.set_facecolor('none')
-    
-    # 1. TẤM LÓT (Xóa text label)
-    if mat_config['use_left']:
-        xc = -gauge/2
-        ax.add_patch(patches.Rectangle((xc - W_L/2, -L_L/2), W_L, L_L, facecolor='#F1F5F9', edgecolor='#94A3B8', ls='--', zorder=0))
-    
-    if mat_config['use_right']:
-        xc = gauge/2
-        ax.add_patch(patches.Rectangle((xc - W_R/2, -L_R/2), W_R, L_R, facecolor='#F1F5F9', edgecolor='#94A3B8', ls='--', zorder=0))
-
-    # 2. XÍCH (Xóa text label)
-    for xc in [-gauge/2, gauge/2]:
-        ax.add_patch(patches.Rectangle((xc-W_trk/2, -L_trk/2), W_trk, L_trk, facecolor='#E2E8F0', edgecolor='#475569', zorder=1))
-        for ys in np.linspace(-L_trk/2, L_trk/2, 18):
-            ax.plot([xc-W_trk/2, xc+W_trk/2], [ys, ys], color='#94A3B8', lw=0.5, zorder=1)
-        ax.plot(xc, L_trk/2 + 0.4, '^', color=COLOR_ACCENT, ms=8)
-
-    # 3. ÁP LỰC
-    p_max_disp = max(sol_res['pressure_max'], 1.0)
-    scale = (max(W_L, W_R) * 2.5) / p_max_disp 
-    norm = Normalize(vmin=0, vmax=p_max_disp)
-    cmap = plt.get_cmap('RdYlBu_r')
-
-    def draw_poly(xc, d, side, W_ref):
-        if d['len_m'] < 0.1: return
-        xe = xc - W_ref/2 if side == 'left' else xc + W_ref/2
-        sgn = -1 if side == 'left' else 1
-        w_t = max(d['p_top']*scale, 0.05)
-        w_b = max(d['p_bot']*scale, 0.05)
-        
-        verts = [(xe, d['y_top']), (xe+w_t*sgn, d['y_top']), (xe+w_b*sgn, d['y_bot']), (xe, d['y_bot'])]
-        
-        color_top, color_bot = cmap(norm(d['p_top'])), cmap(norm(d['p_bot']))
-        grad_cmap = LinearSegmentedColormap.from_list("custom", [color_bot, color_top])
-        
-        poly = patches.Polygon(verts, closed=True, zorder=2, transform=ax.transData)
-        ax.add_patch(poly) 
-        
-        gradient = np.linspace(0, 1, 256).reshape(-1, 1)
-        x_min, x_max = min(v[0] for v in verts), max(v[0] for v in verts)
-        y_min, y_max = min(v[1] for v in verts), max(v[1] for v in verts)
-        im = ax.imshow(gradient, aspect='auto', extent=(x_min, x_max, y_min, y_max), cmap=grad_cmap, zorder=2, alpha=0.85)
-        im.set_clip_path(poly)
-        ax.add_patch(patches.Polygon(verts, closed=True, edgecolor=color_top, facecolor='none', lw=0.8, zorder=3))
-
-        bbox_props = dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.7)
-        txt_off = 0.6 * sgn
-        align = 'right' if side == 'left' else 'left'
-        
-        if d['p_top'] > 0.1:
-            ax.text(xe+w_t*sgn+txt_off, d['y_top'], f"{d['p_top']:.1f} t/m²", ha=align, va='center', fontsize=10, fontweight='bold', color=COLOR_TEXT_MAIN, bbox=bbox_props)
-        if d['p_bot'] > 0.1:
-            ax.text(xe+w_b*sgn+txt_off, d['y_bot'], f"{d['p_bot']:.1f} t/m²", ha=align, va='center', fontsize=10, fontweight='bold', color=COLOR_TEXT_MAIN, bbox=bbox_props)
-
-    draw_poly(-gauge/2, dL, 'left', W_L)
-    draw_poly(gauge/2, dR, 'right', W_R)
-
-    # 4. DIMENSIONS
-    dim_style = dict(arrowstyle='-|>', color='#64748B', lw=1.2)
-    def draw_dim_v(x, y1, y2, t, side=1):
-        off = 0.5 * side
-        ax.annotate("", xy=(x, y1), xytext=(x+off, y1), arrowprops=dict(arrowstyle='-', color='#94A3B8', zorder=20))
-        ax.annotate("", xy=(x, y2), xytext=(x+off, y2), arrowprops=dict(arrowstyle='-', color='#94A3B8', zorder=20))
-        ax.annotate("", xy=(x+off, y1), xytext=(x+off, y2), arrowprops=dim_style)
-        ax.annotate("", xy=(x+off, y2), xytext=(x+off, y1), arrowprops=dim_style)
-        ax.text(x+off+0.2*side, (y1+y2)/2, t, rotation=90, va='center', ha='left' if side==1 else 'right', color=COLOR_TEXT_SEC, fontsize=9, fontweight='bold', bbox=dict(fc='white', ec='none', pad=1))
-    
-    def draw_dim_h(x1, x2, y, t):
-        ax.annotate("", xy=(x1, y), xytext=(x2, y), arrowprops=dim_style)
-        ax.annotate("", xy=(x2, y), xytext=(x1, y), arrowprops=dim_style)
-        ax.text((x1+x2)/2, y+0.2, t, ha='center', va='bottom', color=COLOR_TEXT_SEC, fontsize=9, fontweight='bold')
-
-    # Tính toán vị trí Dim
-    vis_w_L = max(dL['p_top'], dL['p_bot']) * scale if dL['len_m'] > 0 else 0
-    vis_w_R = max(dR['p_top'], dR['p_bot']) * scale if dR['len_m'] > 0 else 0
-    
-    offset_dim_L = W_L/2 + vis_w_L + 2.5
-    offset_dim_R = W_R/2 + vis_w_R + 2.5
-    
-    draw_dim_v(-gauge/2 - offset_dim_L, -L_L/2, L_L/2, f"{L_L:.1f}m", side=-1)
-    draw_dim_v(gauge/2 + offset_dim_R, -L_R/2, L_R/2, f"{L_R:.1f}m")
-
-    draw_dim_h(-gauge/2 - W_L/2, -gauge/2 + W_L/2, L_L/2 + 0.5, f"{W_L:.1f}m")
-    draw_dim_h(gauge/2 - W_R/2, gauge/2 + W_R/2, L_R/2 + 0.5, f"{W_R:.1f}m")
-    draw_dim_h(-gauge/2, gauge/2, max(L_L, L_R)/2 + 1.5, f"Gauge {gauge:.2f}m")
-
-    # 5. CHASSIS
-    cw, ch = gauge - W_trk - 0.5, L_trk * 0.4
-    ax.add_patch(patches.Rectangle((-cw/2, -ch/2), cw, ch, facecolor='#CBD5E1', zorder=0))
-    ax.add_patch(patches.Circle((0,0), gauge*0.35, fill=False, edgecolor=COLOR_ACCENT, lw=3, zorder=3))
-    
-    if phys_res['V_total_ton'] > 0:
-        cy, cx = phys_res['Mx_roll_Tm']/phys_res['V_total_ton'], -phys_res['My_pitch_Tm']/phys_res['V_total_ton']
-        cx, cy = np.clip(cx, -gauge, gauge), np.clip(cy, -L_trk, L_trk)
-        ax.plot([0, cx], [0, cy], color='#475569', lw=2, zorder=4)
-        ax.plot(0, 0, 'o', ms=6, mfc='white', mec='#475569', mew=2, zorder=4)
-        ax.add_patch(patches.Circle((cx, cy), W_trk * 0.35, fill=False, edgecolor='black', lw=1, zorder=6))
-
-    # Dời text "Góc Quay"
-    ax.text(0, -max(L_L, L_R, L_trk)/2 - 7.5, f"Góc Quay: {slew_angle:.1f}°", color=COLOR_TEXT_MAIN, fontsize=14, fontweight='bold', ha='center')
-
-    # 6. INFO BOXES (FIX OVERLAP)
-    def draw_info_box(x_pos, y_pos, title, load, eff_len, eff_pct):
-        content = f"{title}\nLOAD: {load:.1f}T\nEFF LEN: {eff_len:.2f}m ({eff_pct:.0f}%)"
-        ax.text(x_pos, y_pos, content, ha='center', va='top', 
-                color=COLOR_TEXT_MAIN, fontsize=9, family='monospace', fontweight='bold',
-                bbox=dict(boxstyle="round,pad=0.4", fc="#F8FAFC", ec="#94A3B8", lw=1))
-
-    box_y = -max(L_L, L_R, L_trk)/2 - 3.5
-    
-    # [FIX] Tính toán vị trí an toàn cho Box
-    # Nếu gauge nhỏ hơn 6m, đẩy 2 box ra xa trung tâm để không đè nhau
-    safe_dist = 7.0 # Khoảng cách tối thiểu giữa 2 tâm box (ước lượng)
-    
-    # Vị trí mặc định là tâm track (-gauge/2, gauge/2)
-    # Nếu gauge < safe_dist, ta dùng vị trí cưỡng bức bên ngoài
-    pos_L = min(-gauge/2, -safe_dist/2)
-    pos_R = max(gauge/2, safe_dist/2)
-    
-    draw_info_box(pos_L, box_y, "LEFT TRACK", RL, dL['len_m'], dL['len_pct'])
-    draw_info_box(pos_R, box_y, "RIGHT TRACK", RR, dR['len_m'], dR['len_pct'])
-
-    # Tăng giới hạn khung hình
-    lim_x = max(gauge/2, safe_dist/2) + max(offset_dim_L, offset_dim_R) + 2
-    lim_y = max(L_L, L_R)/2 + 8 
-    lim = max(lim_x, lim_y)
-    
-    ax.set_xlim(-lim, lim); ax.set_ylim(-lim, lim)
-    ax.axis('off'); ax.set_aspect('equal')
-    return fig, RL, RR, dL['len_pct'], dR['len_pct']
-
 # ==============================================================================
-# MAIN UI
+# MAIN UI LAYOUT
 # ==============================================================================
 
 with st.sidebar:
-    st.title("⚙️ CẤU HÌNH")
-    st.markdown("---")
+    st.markdown("### 🏗️ CẤU HÌNH CẨU")
     options, msg = get_crane_options()
     if not options: st.error(msg); st.stop()
     
-    with st.expander("1. Chọn Thiết Bị", expanded=True):
+    with st.expander("1. THIẾT BỊ", expanded=True):
         crane_id = st.selectbox("Model", list(options.keys()))
         cwt_name = st.selectbox("Đối trọng", options[crane_id])
-        
         valid_lens = get_valid_boom_lengths(crane_id)
-        if valid_lens:
-            boom_len = st.select_slider("Chiều dài Cần (m)", options=valid_lens, value=valid_lens[len(valid_lens)//2])
-            st.caption(f"🧩 Cấu hình tự động: Gốc + Ngọn + Inserts ({boom_len}m)")
-        else:
-            st.warning("Không tìm thấy cấu hình Boom module. Dùng nhập liệu thủ công.")
-            boom_len = st.number_input("Chiều dài Cần (m)", 20.0, 150.0, 60.0, step=3.0)
+        boom_len = st.select_slider("Chiều dài Cần (m)", options=valid_lens) if valid_lens else st.number_input("Cần (m)", 60.0)
 
-    with st.expander("2. Tấm Lót (Mats)", expanded=False):
-        use_mats = st.checkbox("Kích hoạt")
-        mat_config = {'use_left': False, 'L_left': 0, 'W_left': 0, 'use_right': False, 'L_right': 0, 'W_right': 0}
+    with st.expander("2. ĐỊA HÌNH & TẤM LÓT", expanded=True):
+        c1, c2 = st.columns(2)
+        slope_x = c1.number_input("Dốc Dọc (%)", -5.0, 5.0, 0.0, step=0.1)
+        slope_y = c2.number_input("Dốc Ngang (%)", -5.0, 5.0, 0.0, step=0.1)
+        
+        st.markdown("---")
+        use_mats = st.checkbox("Sử dụng tấm lót (Mats)", value=True)
+        mat_config = {'use_left': False, 'L_left': 6.0, 'W_left': 2.0, 
+                      'use_right': False, 'L_right': 6.0, 'W_right': 2.0}
+        
         if use_mats:
-            c1, c2 = st.columns(2)
-            with c1:
-                st.caption("Trái")
-                if st.checkbox("Lót Trái", value=True):
+            c_mat_l, c_mat_r = st.columns(2)
+            with c_mat_l:
+                if st.checkbox("Lót Trái", True):
                     mat_config['use_left'] = True
-                    mat_config['L_left'] = st.number_input("L (m)", 1.0, 15.0, 8.0, key="LL")
-                    mat_config['W_left'] = st.number_input("W (m)", 1.0, 5.0, 2.0, key="WL")
-            with c2:
-                st.caption("Phải")
-                if st.checkbox("Lót Phải", value=True):
+                    mat_config['L_left'] = st.number_input("L Trái (m)", value=6.0)
+                    mat_config['W_left'] = st.number_input("W Trái (m)", value=2.0)
+            with c_mat_r:
+                if st.checkbox("Lót Phải", True):
                     mat_config['use_right'] = True
-                    mat_config['L_right'] = st.number_input("L (m)", 1.0, 15.0, 8.0, key="LR")
-                    mat_config['W_right'] = st.number_input("W (m)", 1.0, 5.0, 2.0, key="WR")
+                    mat_config['L_right'] = st.number_input("L Phải (m)", value=6.0)
+                    mat_config['W_right'] = st.number_input("W Phải (m)", value=2.0)
+        
+        limit_pressure = st.number_input("P-Allow (t/m²)", value=30.0)
+        soil_ks = 30000
 
-    with st.expander("3. Địa chất", expanded=False):
-        soil_ks = 30000 if st.radio("Đất", ["Tốt", "Yếu"]) == "Tốt" else 5000
-        limit_pressure = st.number_input("P-Allow (t/m²)", 10.0, 100.0, 30.0)
+    st.markdown("### 📦 TẢI TRỌNG")
+    load_mass = st.number_input("Khối lượng Hàng (Tấn)", value=80.0)
+    radius = st.number_input("Bán kính (m)", value=12.0)
+    
+    # [NEW] SLEW INTERFACE (Slider + Circle Visual)
+    st.markdown("---")
+    st.markdown("**GÓC QUAY (Slew Angle)**")
+    
+    col_sl_1, col_sl_2 = st.columns([2, 1])
+    
+    with col_sl_1:
+        # Slider interaction
+        slew_angle = st.slider("Góc (Độ)", 0, 360, 45)
+    
+    with col_sl_2:
+        # Small visual feedback
+        fig_mini, ax_mini = plt.subplots(figsize=(1.2, 1.2), facecolor='#f8fafc')
+        ax_mini.set_aspect('equal')
+        ax_mini.axis('off')
+        ax_mini.add_patch(patches.Circle((0,0), 1, fill=False, edgecolor='#64748b', lw=1.5))
+        rad_mini = np.radians(90 - slew_angle)
+        ax_mini.arrow(0, 0, 0.8*np.cos(rad_mini), 0.8*np.sin(rad_mini), 
+                     head_width=0.25, head_length=0.2, fc='#0284c7', ec='#0284c7', lw=1.5)
+        ax_mini.add_patch(patches.Rectangle((-0.3, -0.5), 0.6, 1.0, fill=False, edgecolor='#94a3b8', lw=0.8, linestyle='--'))
+        st.pyplot(fig_mini, use_container_width=False)
 
-st.markdown(f"<h2 style='text-align: center; margin-bottom: 30px;'>SMC GROUND PRESSURE ANALYSIS</h2>", unsafe_allow_html=True)
-
-# CARDS & INPUTS
-c1, c2, c3 = st.columns([1, 1, 1.5])
-with c1:
-    with st.container(border=True):
-        st.markdown(f"<div class='header-title'>📦 Tải trọng (Tấn)</div>", unsafe_allow_html=True)
-        load_mass = st.number_input("Load", 0.0, 600.0, 80.0, label_visibility="collapsed")
-with c2:
-    with st.container(border=True):
-        st.markdown(f"<div class='header-title'>📏 Bán kính (m)</div>", unsafe_allow_html=True)
-        radius = st.number_input("Radius", 5.0, 100.0, 12.0, label_visibility="collapsed")
-with c3:
-    with st.container(border=True):
-        st.markdown(f"<div class='header-title'>🔄 Góc quay (°)</div>", unsafe_allow_html=True)
-        if 'slew_angle' not in st.session_state: st.session_state.slew_angle = 45
-        def update_sl(): st.session_state.slew_angle = st.session_state.s_sl
-        def update_nm(): st.session_state.slew_angle = st.session_state.s_nm
-        ca, cb = st.columns([1, 2])
-        ca.number_input("N", 0, 360, key="s_nm", on_change=update_nm, label_visibility="collapsed")
-        cb.slider("S", 0, 360, key="s_sl", on_change=update_sl, label_visibility="collapsed")
-        slew_angle = st.session_state.slew_angle
-
-# CALCULATION
+# PROCESS DATA
 specs, _ = get_processed_specs(crane_id, cwt_name, boom_len)
-physics_engine = AdvancedCranePhysics(specs)
+specs['slope_grade_x_pct'] = slope_x
+specs['slope_roll_y_pct'] = slope_y
 
+physics_engine = AdvancedCranePhysics(specs)
 reach = min(radius - specs['pivot_x'], boom_len * 0.99)
 boom_angle = np.degrees(np.arccos(reach/boom_len))
+phys_res = physics_engine.calculate_state(load_mass, boom_angle, 90 - slew_angle)
 
-with st.spinner("Đang tính toán..."):
-    polar_angles, polar_values = calculate_polar_profile(specs, load_mass, boom_angle, soil_ks, mat_config)
-
-phys_angle_curr = 90 - slew_angle
-phys_res_curr = physics_engine.calculate_state(load_mass, boom_angle, phys_angle_curr)
-
-# Mesh & Solver logic
+mesh_gen = AdvancedMeshGenerator(mesh_size=0.05)
+solve_specs = specs.copy()
+sim_L = specs['track_L']
 if mat_config['use_left'] or mat_config['use_right']:
-    max_L = max(mat_config['L_left'] if mat_config['use_left'] else specs['track_L'],
-                mat_config['L_right'] if mat_config['use_right'] else specs['track_L'])
-    solve_specs = specs.copy()
-    solve_specs['track_L'] = max_L
-    solve_specs['track_W'] = max(mat_config['W_left'] if mat_config['use_left'] else specs['track_W'],
-                                 mat_config['W_right'] if mat_config['use_right'] else specs['track_W'])
-    mesh_gen = AdvancedMeshGenerator(mesh_size=0.05)
-    mesh_gen.create_rectangular_mesh(max_L*1.5, specs['track_gauge']*2, default_Ks=soil_ks)
-else:
-    solve_specs = specs
-    mesh_gen = AdvancedMeshGenerator(mesh_size=0.05)
-    mesh_gen.create_rectangular_mesh(specs['track_L']*2, specs['track_gauge']*2, default_Ks=soil_ks)
+    max_L_mat = max(mat_config['L_left'] if mat_config['use_left'] else 0,
+                    mat_config['L_right'] if mat_config['use_right'] else 0)
+    sim_L = max(sim_L, max_L_mat)
+    if mat_config['use_left']: 
+        solve_specs['track_L'] = mat_config['L_left'] 
+        solve_specs['track_W'] = mat_config['W_left']
 
+mesh_gen.create_rectangular_mesh(sim_L*2.5, specs['track_gauge']*2.5, default_Ks=soil_ks)
 solver = SoilStructureSolver(mesh_gen)
-sol_res, err = solver.solve_equilibrium(solve_specs, phys_res_curr, chassis_angle=0)
+sol_res, err = solver.solve_equilibrium(solve_specs, phys_res)
 if err: st.error(err); st.stop()
-sol_res['pressure_map'] /= G_CONST
-sol_res['pressure_max'] /= G_CONST
 
-# KPI ROW
-k1, k2, k3, k4 = st.columns(4)
-with k1:
-    st.markdown(f"<div class='kpi-box'><div class='kpi-label'>Tổng Tải Trọng</div><div class='kpi-value'>{phys_res_curr['V_total_ton']:.1f} T</div></div>", unsafe_allow_html=True)
-with k2:
-    col_p = COLOR_LIMIT if sol_res['pressure_max'] > limit_pressure else COLOR_DATA_LINE
-    st.markdown(f"<div class='kpi-box'><div class='kpi-label'>Áp Lực Max</div><div class='kpi-value' style='color: {col_p}'>{sol_res['pressure_max']:.2f} t/m²</div></div>", unsafe_allow_html=True)
-with k3:
-    util = min((sol_res['pressure_max'] / limit_pressure) * 100, 100)
-    st.markdown(f"<div class='kpi-box'><div class='kpi-label'>Sử Dụng Tải</div><div class='kpi-value'>{util:.0f}%</div></div>", unsafe_allow_html=True)
-with k4:
-    safe = sol_res['pressure_max'] <= limit_pressure
-    st_cls = "status-safe" if safe else "status-danger"
-    st_msg = "AN TOÀN" if safe else "NGUY HIỂM"
-    st.markdown(f"<div class='kpi-box'><div class='kpi-label'>Trạng Thái</div><div style='margin-top:5px'><span class='status-badge {st_cls}'>{st_msg}</span></div></div>", unsafe_allow_html=True)
+# DASHBOARD HEADER
+p_max = sol_res['pressure_max'] / G_CONST
+sliding_force = np.sqrt(phys_res['Fx_slide_ton']**2 + phys_res['Fy_slide_ton']**2)
+sf_slide = (phys_res['V_total_ton'] * 0.3) / (sliding_force + 1e-3)
+sf_bearing = limit_pressure / p_max # Hệ số an toàn chịu tải nền
 
-st.markdown("<div style='height: 20px'></div>", unsafe_allow_html=True)
+k1, k2, k3, k4, k5, k6 = st.columns(6)
+with k1: st.metric("ÁP LỰC MAX", f"{p_max:.2f} t/m²", delta=f"{limit_pressure-p_max:.1f} dư", delta_color="normal" if p_max < limit_pressure else "inverse")
+with k2: st.metric("TỔNG TẢI", f"{phys_res['V_total_ton']:.1f} T")
+with k3: st.metric("LỰC TRƯỢT", f"{sliding_force:.1f} T")
+with k4: st.metric("MÔ-MEN", f"{phys_res['Mz_yaw_Tm']:.1f} Tm")
+with k5: st.metric("HS TRƯỢT", f"{sf_slide:.2f}", delta="Trượt" if sf_slide>1.2 else "Nguy hiểm", delta_color="normal" if sf_slide>1.2 else "inverse")
+with k6: st.metric("HS NỀN", f"{sf_bearing:.2f}", delta="Đủ tải" if sf_bearing>1.0 else "Sụt lún", delta_color="normal" if sf_bearing>1.0 else "inverse")
 
-# CHARTS ROW
-col_main, col_side = st.columns([1.5, 1])
+st.markdown("---")
+
+# DASHBOARD BODY
+col_main, col_side = st.columns([2.5, 1])
+
 with col_main:
-    with st.container(border=True):
-        st.markdown(f"<div class='header-title'>🗺️ Phân bố áp lực chi tiết</div>", unsafe_allow_html=True)
-        fig_map, RL, RR, cL, cR = draw_ground_pressure_map_pro(specs, phys_res_curr, sol_res, mesh_gen, slew_angle, mat_config)
-        st.pyplot(fig_map)
-with col_side:
-    with st.container(border=True):
-        st.markdown(f"<div class='header-title'>🧭 Ổn định 360° (Polar)</div>", unsafe_allow_html=True)
-        fig_polar = draw_polar_chart_pro(polar_angles, polar_values, slew_angle, limit_pressure)
-        st.pyplot(fig_polar)
+    st.markdown("#### 🗺️ BẢN ĐỒ ÁP LỰC CHI TIẾT")
+    fig_map, lL, lR, eL, eR, pct_L, pct_R = draw_pressure_profile_visual(specs, sol_res, mat_config, limit_pressure, mesh_gen, slew_angle)
+    st.pyplot(fig_map, width='stretch')
 
-# REPORT TAB
-tab_rep, = st.tabs(["🖨️ Báo cáo"])
-with tab_rep:
-    st.info("Nhấn Ctrl+P để in báo cáo.")
-    mat_s = "Không dùng"
-    if mat_config['use_left'] or mat_config['use_right']:
-        mat_s = f"L:{mat_config['L_left']}x{mat_config['W_left']} | R:{mat_config['L_right']}x{mat_config['W_right']}"
+with col_side:
+    st.markdown("#### 📊 THÔNG SỐ CHI TIẾT")
     
-    boom_cg = specs.get('boom_cg_radius', 0.0)
-    cg_pct = (boom_cg / boom_len * 100) if boom_len > 0 else 0
-    
+    # Card Left
     st.markdown(f"""
-    <table class="report-table">
-        <tr><td>Model Cẩu</td><td>{crane_id}</td></tr>
-        <tr><td>Cấu hình Cần</td><td>{boom_len}m (CG thực tế: {boom_cg:.1f}m ~ {cg_pct:.0f}%)</td></tr>
-        <tr><td>Đối trọng</td><td>{cwt_name} ({specs['cwt_mass']}T @ {specs['cwt_radius']}m)</td></tr>
-        <tr><td>Tấm lót (Mats)</td><td>{mat_s}</td></tr>
-        <tr><td>Tải trọng Hàng</td><td>{load_mass} T</td></tr>
-        <tr><td>Bán kính làm việc</td><td>{radius} m</td></tr>
-        <tr><td>Tổng trọng lượng vận hành</td><td>{phys_res_curr['V_total_ton']:.1f} T</td></tr>
-        <tr><td>Áp lực đất tối đa</td><td>{sol_res['pressure_max']:.2f} t/m²</td></tr>
-        <tr><td>Giới hạn cho phép</td><td>{limit_pressure} t/m²</td></tr>
-    </table>
+    <div class="info-panel">
+        <div class="panel-title">LEFT TRACK (Xích Trái) {'<span class="badge-mat">MATS</span>' if mat_config['use_left'] else ''}</div>
+        <div class="track-row"><span class="track-label">Tải trọng:</span> <span class="track-val">{lL:.1f} T</span></div>
+        <div class="track-row"><span class="track-label">Hiệu quả:</span> <span class="track-val">{pct_L:.0f}%</span></div>
+        <div class="track-row"><span class="track-label">Chiều dài ép:</span> <span class="track-val">{eL:.2f} m</span></div>
+    </div>
     """, unsafe_allow_html=True)
+    
+    st.markdown("<div style='height: 10px'></div>", unsafe_allow_html=True)
+    
+    # Card Right
+    st.markdown(f"""
+    <div class="info-panel">
+        <div class="panel-title">RIGHT TRACK (Xích Phải) {'<span class="badge-mat">MATS</span>' if mat_config['use_right'] else ''}</div>
+        <div class="track-row"><span class="track-label">Tải trọng:</span> <span class="track-val">{lR:.1f} T</span></div>
+        <div class="track-row"><span class="track-label">Hiệu quả:</span> <span class="track-val">{pct_R:.0f}%</span></div>
+        <div class="track-row"><span class="track-label">Chiều dài ép:</span> <span class="track-val">{eR:.2f} m</span></div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("<div style='height: 20px'></div>", unsafe_allow_html=True)
+    st.markdown("#### 🧭 ỔN ĐỊNH 360°")
+    
+    angles, vals = calculate_polar_profile(specs, load_mass, boom_angle, soil_ks, mat_config)
+    fig_polar = draw_polar_chart_pro(angles, vals, slew_angle, limit_pressure)
+    st.pyplot(fig_polar, width='stretch')

@@ -1,14 +1,14 @@
 """
 MODULE 1: ADVANCED MESH GENERATOR (SYMMETRIC FIX)
 Chức năng: Rời rạc hóa tấm lót và mô phỏng đặc tính địa chất.
-Update: Ép buộc lưới đối xứng qua tâm (0,0) để tránh sai số khi tính toán 90/270 độ.
+Update: Ép buộc lưới đối xứng qua tâm (0,0) tuyệt đối.
 """
 
 import numpy as np
 from matplotlib.path import Path
 
 class AdvancedMeshGenerator:
-    def __init__(self, mesh_size=0.01):
+    def __init__(self, mesh_size=0.05):
         self.mesh_size = mesh_size
         self.nodes_X = None       
         self.nodes_Y = None       
@@ -36,16 +36,11 @@ class AdvancedMeshGenerator:
 
         padding = self.mesh_size * 2
         
-        # 2. [FIX] TẠO LƯỚI ĐỐI XỨNG TUYỆT ĐỐI (Symmetric Grid Generation)
-        # Thay vì dùng arange từ min->max (dễ bị lệch tâm), ta tạo từ tâm 0 ra 2 bên.
+        # 2. [FIX] TẠO LƯỚI ĐỐI XỨNG TUYỆT ĐỐI
         
         # Tìm kích thước lớn nhất cần bao phủ
         limit_x = max(abs(min_x), abs(max_x)) + padding
         limit_y = max(abs(min_y), abs(max_y)) + padding
-        
-        # Tính số lượng bước nhảy (đảm bảo số lẻ để có điểm 0 ở giữa, hoặc số chẵn đối xứng)
-        # Ở đây dùng logic: tạo lưới từ -Limit đến +Limit
-        # np.linspace đảm bảo đối xứng tốt hơn arange
         
         nx = int(np.ceil(limit_x / self.mesh_size))
         ny = int(np.ceil(limit_y / self.mesh_size))
@@ -53,6 +48,10 @@ class AdvancedMeshGenerator:
         # Tạo dải tọa độ đối xứng: [-n*size, ..., 0, ..., n*size]
         x_range = np.linspace(-nx * self.mesh_size, nx * self.mesh_size, 2*nx + 1)
         y_range = np.linspace(-ny * self.mesh_size, ny * self.mesh_size, 2*ny + 1)
+        
+        # [CRITICAL FIX] Cưỡng bức điểm giữa về 0.0 tuyệt đối (tránh lỗi 1e-17)
+        x_range[nx] = 0.0
+        y_range[ny] = 0.0
         
         self.nodes_X, self.nodes_Y = np.meshgrid(x_range, y_range)
         self.dA = self.mesh_size ** 2

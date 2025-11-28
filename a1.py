@@ -47,6 +47,15 @@ st.markdown(f"""
     .track-label {{ color: #64748b; font-weight: 500; }}
     .track-val {{ color: #0f172a; font-weight: 700; font-family: 'Roboto Mono', monospace; }}
     
+    .corner-grid {{
+        display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px;
+    }}
+    .corner-box {{
+        background: #f8fafc; padding: 8px; border-radius: 6px; text-align: center; border: 1px solid #e2e8f0;
+    }}
+    .corner-name {{ font-size: 0.7rem; color: #64748b; font-weight: 600; margin-bottom: 4px; }}
+    .corner-val {{ font-size: 1.1rem; color: #0f172a; font-weight: 700; }}
+    
     .badge-mat {{
         background: #fef3c7; color: #b45309; padding: 2px 6px; border-radius: 4px;
         font-size: 0.7rem; font-weight: 700; border: 1px solid #fcd34d;
@@ -61,12 +70,39 @@ st.markdown(f"""
 
 G_CONST = 9.81 
 
+# --- HELPER: ROBUST PEAK FINDER ---
+def get_peak_pressure_in_region(x_center, y_center, width, length, mesh_obj, pressure_map):
+    """
+    Tìm giá trị áp lực lớn nhất trong vùng lân cận (Robust Region Scan).
+    Khắc phục lỗi lấy đúng điểm mép = 0.
+    """
+    if mesh_obj is None or pressure_map is None: return 0.0
+    
+    # Xác định vùng quét (Scan Box): +/- 0.5m quanh tâm điểm dò
+    # Hoặc quét toàn bộ bề rộng track tại vị trí đầu/cuối
+    scan_margin_x = width / 2 + 0.2
+    scan_margin_y = 1.0 # Quét 1 mét dọc theo chiều dài
+    
+    # Tạo mask cho vùng
+    mask_region = (mesh_obj.nodes_X >= x_center - scan_margin_x) & \
+                  (mesh_obj.nodes_X <= x_center + scan_margin_x) & \
+                  (mesh_obj.nodes_Y >= y_center - scan_margin_y) & \
+                  (mesh_obj.nodes_Y <= y_center + scan_margin_y)
+    
+    # Kết hợp với active mask
+    final_mask = mask_region & mesh_obj.active_mask
+    
+    if np.sum(final_mask) == 0: return 0.0
+    
+    # Lấy max trong vùng
+    vals = pressure_map[final_mask] / G_CONST
+    return np.max(vals) if len(vals) > 0 else 0.0
+
 # --- HÀM VẼ PRO (CAD STYLE + CLIPPING MASK FIX) ---
 
 def draw_pressure_profile_visual(specs, sol_res, mat_config, limit_p, mesh_obj=None, slew_angle=0):
     """
-    Vẽ bản đồ áp lực.
-    Fix: Clipping Mask cho Heatmap (không bị lem), Carbody Layering.
+    Vẽ bản đồ áp lực và hiển thị 4 góc.
     """
     # CAD Colors
     C_STEEL = '#94a3b8'      
@@ -89,6 +125,28 @@ def draw_pressure_profile_visual(specs, sol_res, mat_config, limit_p, mesh_obj=N
     if mat_config['use_right']: L_R, W_R, is_mat_R = mat_config['L_right'], mat_config['W_right'], True
     else: L_R, W_R, is_mat_R = trk_L, trk_W, False
 
+    # --- TÍNH TOÁN 4 GÓC (Robust Scan) ---
+    corners = {'FL': 0, 'FR': 0, 'RL': 0, 'RR': 0}
+    if mesh_obj and sol_res:
+        full_p = sol_res['pressure_map']
+        # Front Left (Đầu xích trái): Center X = -gauge/2, Center Y = L_L/2 (approx tip)
+        corners['FL'] = get_peak_pressure_in_region(-gauge/2, L_L/2 - 0.5, W_L, 1.0, mesh_obj, full_p)
+        # Front Right (Đầu xích phải)
+        corners['FR'] = get_peak_pressure_in_region(gauge/2, L_R/2 - 0.5, W_R, 1.0, mesh_obj, full_p)
+        # Rear Left (Đuôi xích trái)
+        corners['RL'] = get_peak_pressure_in_region(-gauge/2, -L_L/2 + 0.5, W_L, 1.0, mesh_obj, full_p)
+        # Rear Right (Đuôi xích phải)
+        corners['RR'] = get_peak_pressure_in_region(gauge/2, -L_R/2 + 0.5, W_R, 1.0, mesh_obj, full_p)
+
+        # Tính toán Tải trọng Global (như trước)
+        p_map_g = full_p / G_CONST
+        mask_L_glob = (mesh_obj.nodes_X < -0.1) & (p_map_g > 0)
+        load_real_L = np.sum(p_map_g[mask_L_glob]) * mesh_obj.dA
+        mask_R_glob = (mesh_obj.nodes_X > 0.1) & (p_map_g > 0)
+        load_real_R = np.sum(p_map_g[mask_R_glob]) * mesh_obj.dA
+    else:
+        load_real_L = 0; load_real_R = 0
+
     # --- SETUP FIGURE ---
     max_W = max(W_L, W_R, trk_W)
     limit_x = gauge/2 + max_W + 2.5
@@ -105,80 +163,80 @@ def draw_pressure_profile_visual(specs, sol_res, mat_config, limit_p, mesh_obj=N
     # --- HELPERS ---
     def draw_dim_arrow(p1, p2, text, offset=0, color=C_DIM_LINE):
         x1, y1 = p1; x2, y2 = p2
+        is_vert = abs(x1-x2) < 0.1
+        
+        # Draw Ticks
         ax.plot([x1, x1], [y1, y1+offset], color=color, lw=0.5, alpha=0.5)
         ax.plot([x2, x2], [y2, y2+offset], color=color, lw=0.5, alpha=0.5)
+        
+        # Draw Arrow
         ax.annotate("", xy=(x1, y1+offset), xytext=(x2, y2+offset),
                     arrowprops=dict(arrowstyle='<->', color=color, lw=1.0, shrinkA=0, shrinkB=0))
-        mid_x, mid_y = (x1+x2)/2, y1+offset
-        bbox = dict(facecolor='white', edgecolor='none', pad=1, alpha=0.8)
-        is_vert = abs(x1-x2) < 0.1
-        rot = 90 if is_vert else 0
-        va = 'center' if is_vert else 'bottom'
-        ha = 'right' if is_vert else 'center'
-        txt_off = 0.1 if not is_vert else -0.1
-        ax.text(mid_x, mid_y + (0 if is_vert else txt_off), text, 
-                color=color, fontsize=8, rotation=rot, ha=ha, va=va, fontweight='bold', bbox=bbox)
+        
+        # Text Background
+        bbox = dict(facecolor='white', edgecolor='none', pad=2, alpha=0.8)
+        
+        # [FIX] TEXT POSITIONING
+        if is_vert:
+            # Vertical: Center text between Y1 and Y2
+            mid_x = x1
+            mid_y = (y1 + y2) / 2 + offset
+            ax.text(mid_x, mid_y, text, color=color, fontsize=8, rotation=90, 
+                   ha='center', va='center', fontweight='bold', bbox=bbox)
+        else:
+            # Horizontal: Center text between X1 and X2
+            mid_x = (x1 + x2) / 2
+            mid_y = y1 + offset
+            # Adjust VA based on offset direction
+            va = 'bottom' if offset >= 0 else 'top'
+            ax.text(mid_x, mid_y, text, color=color, fontsize=8, rotation=0, 
+                   ha='center', va=va, fontweight='bold', bbox=bbox)
 
     # --- 1. VẼ CỤM CHÂN (TRACK + MAT) ---
-    def draw_foot(center_x, w_mat, l_mat, has_mat):
-        load = 0; eff_len = 0; eff_pct = 0
-        
-        # Tọa độ chính xác của hình chữ nhật cần clipping
+    def draw_foot(center_x, w_mat, l_mat, has_mat, precalc_load):
+        eff_len = 0; eff_pct = 0
         x_min_clip, y_min_clip = center_x - w_mat/2, -l_mat/2
         
-        # Tạo Clipping Path
         clip_rect = patches.Rectangle((x_min_clip, y_min_clip), w_mat, l_mat, 
                                     transform=ax.transData, fill=False, visible=False)
         ax.add_patch(clip_rect)
 
-        # A. TẤM LÓT (Nền dưới cùng)
         if has_mat:
             rect = patches.Rectangle((x_min_clip, y_min_clip), w_mat, l_mat,
                                    facecolor='#f8fafc', edgecolor='#cbd5e1', lw=1, hatch='///', alpha=0.5, zorder=1)
             ax.add_patch(rect)
-            rect_border = patches.Rectangle((x_min_clip, y_min_clip), w_mat, l_mat,
-                                          facecolor='none', edgecolor='#94a3b8', lw=1, zorder=1)
-            ax.add_patch(rect_border)
+            ax.add_patch(patches.Rectangle((x_min_clip, y_min_clip), w_mat, l_mat,
+                                          facecolor='none', edgecolor='#94a3b8', lw=1, zorder=1))
 
-        # B. HEATMAP (Dùng pcolormesh và cắt chính xác)
         if mesh_obj:
             X_coords = mesh_obj.nodes_X[0, :]
             Y_coords = mesh_obj.nodes_Y[:, 0]
             
-            # Tính toán chỉ số lưới để lấy vùng áp lực
-            def find_nearest_idx(arr, val):
-                return np.argmin(np.abs(arr - val))
+            def find_nearest_idx(arr, val): return np.argmin(np.abs(arr - val))
 
             idx_x_min = find_nearest_idx(X_coords, x_min_clip)
-            idx_x_max = find_nearest_idx(X_coords, x_min_clip + w_mat)
+            idx_x_max = find_nearest_idx(X_coords, x_min_clip + w_mat) + 1 
             idx_y_min = find_nearest_idx(Y_coords, y_min_clip)
-            idx_y_max = find_nearest_idx(Y_coords, y_min_clip + l_mat)
+            idx_y_max = find_nearest_idx(Y_coords, y_min_clip + l_mat) + 1
             
-            # Cắt ma trận Z (áp lực)
+            idx_x_max = min(idx_x_max, len(X_coords))
+            idx_y_max = min(idx_y_max, len(Y_coords))
+
             Z_map = sol_res['pressure_map'][idx_y_min:idx_y_max, idx_x_min:idx_x_max] / G_CONST
+            X_plot = X_coords[idx_x_min:idx_x_max]
+            Y_plot = Y_coords[idx_y_min:idx_y_max]
             
-            # Cắt tọa độ X và Y (cần N+1 điểm cho N ô lưới)
-            X_pcolor = X_coords[idx_x_min:idx_x_max+1]
-            Y_pcolor = Y_coords[idx_y_min:idx_y_max+1]
-            
-            # Đảm bảo kích thước Z khớp với X và Y
             if Z_map.shape[0] > 0 and Z_map.shape[1] > 0:
-                ax.pcolormesh(X_pcolor, Y_pcolor, Z_map, 
-                              cmap=cmap, norm=norm, shading='flat', zorder=2)
+                if X_plot.size == Z_map.shape[1] and Y_plot.size == Z_map.shape[0]:
+                     ax.pcolormesh(X_plot, Y_plot, Z_map, cmap=cmap, norm=norm, shading='nearest', zorder=2)
                 
-                # Tính tải trọng
                 ps_all = sol_res['pressure_map'] / G_CONST
-                load_mask = (mesh_obj.nodes_X >= X_pcolor[:-1].min()) & (mesh_obj.nodes_X <= X_pcolor[:-1].max()) & \
-                            (mesh_obj.nodes_Y >= Y_pcolor[:-1].min()) & (mesh_obj.nodes_Y <= Y_pcolor[:-1].max()) & \
-                            (mesh_obj.active_mask)
-                load = np.sum(ps_all[load_mask]) * mesh_obj.dA
-                
-                # Tính hiệu quả tiếp xúc
-                contact_nodes_mask = load_mask & (ps_all > 0.1)
-                total_nodes = np.sum(load_mask)
-                                     
+                local_mask = (mesh_obj.nodes_X >= x_min_clip) & (mesh_obj.nodes_X <= x_min_clip + w_mat) & \
+                             (mesh_obj.nodes_Y >= y_min_clip) & (mesh_obj.nodes_Y <= y_min_clip + l_mat) & \
+                             (mesh_obj.active_mask)
+                contact_nodes_mask = local_mask & (ps_all > 0.1)
+                total_nodes = np.sum(local_mask)
                 contact_area_nodes = np.sum(contact_nodes_mask)
-                
                 eff_pct = (contact_area_nodes / total_nodes * 100) if total_nodes > 0 else 0
                 eff_len = (contact_area_nodes * mesh_obj.dA) / w_mat if w_mat > 0 else 0
 
@@ -201,11 +259,25 @@ def draw_pressure_profile_visual(specs, sol_res, mat_config, limit_p, mesh_obj=N
                        (center_x + w_mat/2, -limit_y + 0.8),
                        f"{w_mat}m", offset=-0.2)
 
-        return load, eff_len, eff_pct
+        return precalc_load, eff_len, eff_pct
 
     # Vẽ Trái/Phải
-    l_L, e_L, pct_L = draw_foot(-gauge/2, W_L, L_L, is_mat_L)
-    l_R, e_R, pct_R = draw_foot(gauge/2, W_R, L_R, is_mat_R)
+    l_L, e_L, pct_L = draw_foot(-gauge/2, W_L, L_L, is_mat_L, load_real_L)
+    l_R, e_R, pct_R = draw_foot(gauge/2, W_R, L_R, is_mat_R, load_real_R)
+
+    # --- VẼ LABEL 4 GÓC TRỰC TIẾP TRÊN BẢN ĐỒ ---
+    def draw_corner_label(x, y, val, align_x='center', align_y='bottom'):
+        txt_col = COLOR_DANGER if val > limit_p else '#1e293b'
+        bg_col = 'white'
+        box_props = dict(boxstyle='round,pad=0.2', facecolor=bg_col, edgecolor='#cbd5e1', alpha=0.9)
+        ax.text(x, y, f"{val:.1f}", color=txt_col, fontweight='bold', fontsize=9, 
+                ha=align_x, va=align_y, bbox=box_props, zorder=20)
+    
+    # Vẽ 4 góc (Căn chỉnh để không che hình)
+    draw_corner_label(-gauge/2, L_L/2 + 0.5, corners['FL'], 'center', 'bottom')
+    draw_corner_label(gauge/2, L_R/2 + 0.5, corners['FR'], 'center', 'bottom')
+    draw_corner_label(-gauge/2, -L_L/2 - 0.5, corners['RL'], 'center', 'top')
+    draw_corner_label(gauge/2, -L_R/2 - 0.5, corners['RR'], 'center', 'top')
 
     # --- 2. VẼ THÂN MÁY (CARBODY) ---
     draw_dim_arrow((-gauge/2, limit_y - 0.8), (gauge/2, limit_y - 0.8), f"{gauge}m", offset=0.3)
@@ -213,12 +285,10 @@ def draw_pressure_profile_visual(specs, sol_res, mat_config, limit_p, mesh_obj=N
     beam_h = 0.4
     ax.add_patch(patches.Rectangle((-gauge/2, -beam_h/2), gauge, beam_h, facecolor=C_STEEL, edgecolor='none', zorder=5))
     
-    cb_w = gauge - trk_W - 1.0
-    cb_h = cb_w * 0.8 
+    cb_w = gauge - trk_W - 1.0; cb_h = cb_w * 0.8 
     if cb_h > trk_L * 0.6: cb_h = trk_L * 0.6
     
-    rect_cb = patches.Rectangle((-cb_w/2, -cb_h/2), cb_w, cb_h, 
-                              facecolor='#f1f5f9', edgecolor=C_STEEL, lw=2, zorder=6)
+    rect_cb = patches.Rectangle((-cb_w/2, -cb_h/2), cb_w, cb_h, facecolor='#f1f5f9', edgecolor=C_STEEL, lw=2, zorder=6)
     ax.add_patch(rect_cb)
     ax.plot([-cb_w/2, cb_w/2], [-cb_h/2, cb_h/2], color=C_STEEL, lw=1, alpha=0.3, zorder=6)
     ax.plot([-cb_w/2, cb_w/2], [cb_h/2, -cb_h/2], color=C_STEEL, lw=1, alpha=0.3, zorder=6)
@@ -236,7 +306,7 @@ def draw_pressure_profile_visual(specs, sol_res, mat_config, limit_p, mesh_obj=N
     ax.add_patch(patches.Wedge((0,0), cg_sz, 180, 270, fc='black', zorder=9))
     ax.add_patch(patches.Circle((0,0), cg_sz, fill=False, ec='black', lw=1, zorder=9))
 
-    ax.text(0, -limit_y + 1.5, f"SLEW: {slew_angle}°", ha='center', fontsize=10, fontweight='bold', 
+    ax.text(0, -limit_y + 1.5, f"góc quay: {slew_angle}°", ha='center', fontsize=10, fontweight='bold', 
             bbox=dict(facecolor='white', edgecolor='#e2e8f0', boxstyle='round,pad=0.3'))
 
     # --- 3. LEGEND ---
@@ -250,7 +320,7 @@ def draw_pressure_profile_visual(specs, sol_res, mat_config, limit_p, mesh_obj=N
     ax.text(cbar_x+cbar_w, cbar_y+cbar_h+0.15, f"{limit_p*1.1:.1f}", ha='center', fontsize=7, color=COLOR_DANGER, fontweight='bold')
     ax.text(0, cbar_y+cbar_h+0.15, "GROUND PRESSURE", ha='center', fontsize=7, fontweight='bold', color='#334155')
 
-    return fig, l_L, l_R, e_L, e_R, pct_L, pct_R
+    return fig, l_L, l_R, e_L, e_R, pct_L, pct_R, corners
 
 # --- HÀM VẼ POLAR PRO (Chi tiết hơn) ---
 def draw_polar_chart_pro(angles, p_values, current_slew, limit_p=30.0):
@@ -260,7 +330,7 @@ def draw_polar_chart_pro(angles, p_values, current_slew, limit_p=30.0):
     ax.set_theta_direction(-1)
     
     # Grid đậm và chi tiết hơn
-    ax.grid(color='#cbd5e1', linestyle='-', linewidth=0.8, alpha=0.6)
+    ax.grid(color="#032349", linestyle='-', linewidth=0.8, alpha=0.6)
     
     # Tự động điều chỉnh giới hạn R
     r_max = max(np.max(p_values), limit_p) * 1.15
@@ -308,7 +378,7 @@ def calculate_polar_profile(specs, load_mass, boom_angle, soil_ks, mat_config):
     if mat_config['use_left'] or mat_config['use_right']:
         solve_specs['track_L'] = L_sim
         solve_specs['track_W'] = max(specs['track_W'], mat_config.get('W_left',0), mat_config.get('W_right',0))
-    angles = np.arange(0, 360, 5) # 5 degree step
+    angles = np.arange(0, 360, 1) # 1 degree step
     p_max_values = []
     for ang in angles:
         phys_angle = 90 - ang
@@ -413,19 +483,37 @@ solver = SoilStructureSolver(mesh_gen)
 sol_res, err = solver.solve_equilibrium(solve_specs, phys_res)
 if err: st.error(err); st.stop()
 
-# DASHBOARD HEADER
+# DASHBOARD HEADER (UPDATED PHASE 2)
 p_max = sol_res['pressure_max'] / G_CONST
 sliding_force = np.sqrt(phys_res['Fx_slide_ton']**2 + phys_res['Fy_slide_ton']**2)
 sf_slide = (phys_res['V_total_ton'] * 0.3) / (sliding_force + 1e-3)
 sf_bearing = limit_pressure / p_max # Hệ số an toàn chịu tải nền
 
+# Thông số Solver AI
+n_iter = sol_res.get('solver_iters', 0)
+cost_val = sol_res.get('solver_cost', 0)
+
 k1, k2, k3, k4, k5, k6 = st.columns(6)
-with k1: st.metric("ÁP LỰC MAX", f"{p_max:.2f} t/m²", delta=f"{limit_pressure-p_max:.1f} dư", delta_color="normal" if p_max < limit_pressure else "inverse")
-with k2: st.metric("TỔNG TẢI", f"{phys_res['V_total_ton']:.1f} T")
-with k3: st.metric("LỰC TRƯỢT", f"{sliding_force:.1f} T")
-with k4: st.metric("MÔ-MEN", f"{phys_res['Mz_yaw_Tm']:.1f} Tm")
-with k5: st.metric("HS TRƯỢT", f"{sf_slide:.2f}", delta="Trượt" if sf_slide>1.2 else "Nguy hiểm", delta_color="normal" if sf_slide>1.2 else "inverse")
-with k6: st.metric("HS NỀN", f"{sf_bearing:.2f}", delta="Đủ tải" if sf_bearing>1.0 else "Sụt lún", delta_color="normal" if sf_bearing>1.0 else "inverse")
+with k1: 
+    st.metric("ÁP LỰC MAX", f"{p_max:.2f} t/m²", 
+             delta=f"{limit_pressure-p_max:.1f} dư", 
+             delta_color="normal" if p_max < limit_pressure else "inverse")
+with k2: 
+    st.metric("TỔNG TẢI", f"{phys_res['V_total_ton']:.1f} T")
+with k3: 
+    st.metric("SOLVER AI", f"{n_iter} iters", 
+             delta="Converged" if cost_val < 1e-3 else "Low Acc",
+             delta_color="normal" if cost_val < 1e-3 else "off")
+with k4: 
+    st.metric("MÔ-MEN", f"{phys_res['Mz_yaw_Tm']:.1f} Tm")
+with k5: 
+    st.metric("HS TRƯỢT NỀN ĐẤT", f"{sf_slide:.2f}", 
+             delta="An toàn" if sf_slide>1.2 else "Nguy hiểm", 
+             delta_color="normal" if sf_slide>1.2 else "inverse")
+with k6: 
+    st.metric("HS AN TOÀN NỀN", f"{sf_bearing:.2f}", 
+             delta="Đủ tải" if sf_bearing>1.0 else "Sụt lún", 
+             delta_color="normal" if sf_bearing>1.0 else "inverse")
 
 st.markdown("---")
 
@@ -434,11 +522,38 @@ col_main, col_side = st.columns([2.5, 1])
 
 with col_main:
     st.markdown("#### 🗺️ BẢN ĐỒ ÁP LỰC CHI TIẾT")
-    fig_map, lL, lR, eL, eR, pct_L, pct_R = draw_pressure_profile_visual(specs, sol_res, mat_config, limit_pressure, mesh_gen, slew_angle)
+    # [FIX] Nhận thêm biến corners từ hàm vẽ
+    fig_map, lL, lR, eL, eR, pct_L, pct_R, corners = draw_pressure_profile_visual(specs, sol_res, mat_config, limit_pressure, mesh_gen, slew_angle)
     st.pyplot(fig_map, width='stretch')
 
 with col_side:
     st.markdown("#### 📊 THÔNG SỐ CHI TIẾT")
+    
+    # Display 4 Corners (Lấy giá trị từ hàm vẽ để đồng bộ)
+    st.markdown("""
+    <div class="info-panel">
+        <div class="panel-title">GIÁ TRỊ 4 GÓC (t/m²)</div>
+        <div class="corner-grid">
+            <div class="corner-box">
+                <div class="corner-name">TRƯỚC TRÁI</div>
+                <div class="corner-val">{:.2f}</div>
+            </div>
+            <div class="corner-box">
+                <div class="corner-name">TRƯỚC PHẢI</div>
+                <div class="corner-val">{:.2f}</div>
+            </div>
+            <div class="corner-box">
+                <div class="corner-name">SAU TRÁI</div>
+                <div class="corner-val">{:.2f}</div>
+            </div>
+            <div class="corner-box">
+                <div class="corner-name">SAU PHẢI</div>
+                <div class="corner-val">{:.2f}</div>
+            </div>
+        </div>
+    </div>
+    <div style='height: 10px'></div>
+    """.format(corners['FL'], corners['FR'], corners['RL'], corners['RR']), unsafe_allow_html=True)
     
     # Card Left
     st.markdown(f"""
@@ -463,9 +578,8 @@ with col_side:
     """, unsafe_allow_html=True)
     
     st.markdown("<div style='height: 20px'></div>", unsafe_allow_html=True)
-    st.markdown("#### 🧭 ỔN ĐỊNH 360°")
+    st.markdown("#### 🧭 SƠ ĐỒ ỔN ĐỊNH°")
     
     angles, vals = calculate_polar_profile(specs, load_mass, boom_angle, soil_ks, mat_config)
     fig_polar = draw_polar_chart_pro(angles, vals, slew_angle, limit_pressure)
-
     st.pyplot(fig_polar, width='stretch')

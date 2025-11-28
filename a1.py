@@ -208,7 +208,7 @@ def draw_pressure_profile_visual(specs, sol_res, mat_config, limit_p, mesh_obj=N
     l_R, e_R, pct_R = draw_foot(gauge/2, W_R, L_R, is_mat_R)
 
     # --- 2. VẼ THÂN MÁY (CARBODY) ---
-    draw_dim_arrow((-gauge/2, limit_y - 0.8), (gauge/2, limit_y - 0.8), f"Gauge {gauge}m", offset=0.3)
+    draw_dim_arrow((-gauge/2, limit_y - 0.8), (gauge/2, limit_y - 0.8), f"{gauge}m", offset=0.3)
 
     beam_h = 0.4
     ax.add_patch(patches.Rectangle((-gauge/2, -beam_h/2), gauge, beam_h, facecolor=C_STEEL, edgecolor='none', zorder=5))
@@ -467,4 +467,5 @@ with col_side:
     
     angles, vals = calculate_polar_profile(specs, load_mass, boom_angle, soil_ks, mat_config)
     fig_polar = draw_polar_chart_pro(angles, vals, slew_angle, limit_pressure)
+
     st.pyplot(fig_polar, width='stretch')

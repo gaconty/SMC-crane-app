@@ -38,6 +38,11 @@ class BoomSystem(BaseModel):
     tip_section: BoomSection
     inserts: List[BoomInsert] = []
 
+class JibConfig(BaseModel):
+    length_m: float
+    mass_ton: float
+    offset_angles: List[float] = [10.0, 30.0]
+
 class CraneData(BaseModel):
     id: str
     model_name: str
@@ -46,6 +51,7 @@ class CraneData(BaseModel):
     crawler_system: CrawlerSystem
     counterweight_configs: List[CounterweightConfig]
     boom_system: BoomSystem
+    jib_configs: List[JibConfig] = []
 
 class CraneLibrary(BaseModel):
     cranes: List[CraneData]

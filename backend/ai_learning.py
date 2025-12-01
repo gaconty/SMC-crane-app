@@ -51,29 +51,69 @@ class SimpleKNN:
             
         return np.array(predictions)
 
+    def save_state(self, filepath):
+        import pickle
+        state = {
+            'k': self.k,
+            'X': self.X,
+            'y': self.y,
+            'X_min': self.X_min,
+            'X_max': self.X_max
+        }
+        with open(filepath, 'wb') as f:
+            pickle.dump(state, f)
+
+    def load_state(self, filepath):
+        import pickle
+        with open(filepath, 'rb') as f:
+            state = pickle.load(f)
+        self.k = state['k']
+        self.X = state['X']
+        self.y = state['y']
+        self.X_min = state['X_min']
+        self.X_max = state['X_max']
+
 class CraneAILearning:
     def __init__(self):
         self.data_file = DATA_FILE
         self.model_file = MODEL_FILE
         self.model = None
         self.is_trained = False
-        self.feature_cols = ['load_mass', 'radius', 'boom_len', 'slew_angle', 'soil_ks', 'cwt_mass']
+        self.feature_cols = ['load_mass', 'radius', 'boom_len', 'slew_angle', 'soil_ks', 'cwt_mass', 'mat_L', 'mat_W']
         self._load_model()
 
     def _load_model(self):
         if os.path.exists(self.model_file):
             try:
-                self.model = joblib.load(self.model_file)
+                loaded_obj = joblib.load(self.model_file)
+                if isinstance(loaded_obj, dict):
+                    # It's a SimpleKNN state dict
+                    self.model = SimpleKNN()
+                    self.model.k = loaded_obj['k']
+                    self.model.X = loaded_obj['X']
+                    self.model.y = loaded_obj['y']
+                    self.model.X_min = loaded_obj['X_min']
+                    self.model.X_max = loaded_obj['X_max']
+                else:
+                    self.model = loaded_obj
+                
                 self.is_trained = True
             except:
                 # Fallback load for SimpleKNN if joblib fails or not available
                 try:
-                    import pickle
-                    with open(self.model_file, 'rb') as f:
-                        self.model = pickle.load(f)
+                    # Try loading as state dict first (New Way)
+                    self.model = SimpleKNN()
+                    self.model.load_state(self.model_file)
                     self.is_trained = True
-                except Exception as e:
-                    print(f"Failed to load model: {e}")
+                except:
+                    # Try legacy pickle load (Old Way)
+                    try:
+                        import pickle
+                        with open(self.model_file, 'rb') as f:
+                            self.model = pickle.load(f)
+                        self.is_trained = True
+                    except Exception as e:
+                        print(f"Failed to load model: {e}")
 
     def log_calculation(self, inputs: dict, outputs: dict):
         """
@@ -122,9 +162,8 @@ class CraneAILearning:
                 # Fallback to SimpleKNN
                 self.model = SimpleKNN(k=3)
                 self.model.fit(X, y)
-                import pickle
-                with open(self.model_file, 'wb') as f:
-                    pickle.dump(self.model, f)
+                # Save state instead of object to avoid pickling class issues
+                self.model.save_state(self.model_file)
             
             self.is_trained = True
             return f"Success! Model trained on {len(X)} records ({'RandomForest' if AI_AVAILABLE else 'SimpleKNN'})."

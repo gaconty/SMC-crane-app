@@ -1,4 +1,7 @@
-streamlit
 numpy
-matplotlib
 scipy
+pandas
+matplotlib
+streamlit
+scikit-learn
+scikit-optimize

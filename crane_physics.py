@@ -2,20 +2,14 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 
 class AdvancedCranePhysics:
-    """
-    MODULE PHYSICS: 3D WRENCH & KINEMATICS (FIXED UNITS)
-    Sử dụng vector 3D và ma trận xoay.
-    Fix lỗi: Chuẩn hóa đơn vị output về Tấn và Tấn.m
-    """
     def __init__(self, specs):
         self.specs = specs
-        self.g_mag = 9.81 
+        self.g_mag = 9.81
         
-        # 1. Slope & Gravity Vector
-        slope_x_pct = specs.get('slope_grade_x_pct', 0.0) 
-        slope_y_pct = specs.get('slope_roll_y_pct', 0.0) 
+        # Extract slope if present, else 0
+        slope_y_pct = specs.get('slope_y_pct', 0.0)
+        angle_x = specs.get('angle_x', 0.0) # Assuming angle_x might be needed too
         
-        angle_x = np.arctan(slope_x_pct / 100.0)
         angle_y = np.arctan(slope_y_pct / 100.0)
         
         r_x = R.from_euler('x', angle_y)

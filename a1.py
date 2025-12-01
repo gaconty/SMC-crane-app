@@ -4,23 +4,12 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 from matplotlib.path import Path
-
-# IMPORT MODULES
-from unified_data import get_crane_options, get_processed_specs, get_valid_boom_lengths
 from crane_physics import AdvancedCranePhysics
-from mesh_engine import AdvancedMeshGenerator
 from solver_engine import SoilStructureSolver
-
-# CẤU HÌNH TRANG
-st.set_page_config(page_title="SMC Crane Planner", layout="wide", page_icon="🏗️")
-
-# --- STYLE COLORS ---
-COLOR_BG_APP = '#ffffff'
-COLOR_TEXT_MAIN = '#1e293b' # Slate 800
-COLOR_TEXT_SEC = '#64748b'  # Slate 500
-COLOR_ACCENT = '#0284c7'    # Sky 600
-COLOR_SAFE = '#16a34a'      # Green 600
-COLOR_DANGER = '#dc2626'    # Red 600
+from mesh_engine import AdvancedMeshGenerator
+from analysis_engine import calculate_polar_profile
+import ai_agent
+from config import *
 
 # --- CSS ---
 st.markdown(f"""
@@ -68,7 +57,346 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-G_CONST = 9.81 
+# --- DATA & CONFIG ---
+# --- DATA & CONFIG ---
+from backend.crane_manager import CraneManager
+from backend.crane_models import CraneData, BaseStructure, CrawlerSystem, CounterweightConfig, BoomSystem, BoomSection, BoomInsert
+
+@st.cache_resource
+def get_manager():
+    return CraneManager()
+
+manager = get_manager()
+
+def get_crane_options():
+    """Trả về danh sách cẩu và đối trọng khả dụng từ Database."""
+    cranes = manager.get_all_cranes()
+    if not cranes:
+        return {}, "Chưa có dữ liệu cẩu. Vui lòng thêm mới trong tab Quản lý."
+    
+    options = {}
+    for c in cranes:
+        cwt_names = [cwt.name for cwt in c.counterweight_configs]
+        options[c.id] = cwt_names
+    return options, None
+
+from backend.boom_logic import generate_boom_configs
+
+@st.cache_data
+def get_cached_boom_configs(crane_id):
+    """Cache boom configs to avoid re-calculating on every rerun."""
+    crane = manager.get_crane(crane_id)
+    if not crane: return {}
+    return generate_boom_configs(crane)
+
+def get_valid_boom_lengths(crane_id):
+    """Trả về danh sách chiều dài cần khả dụng từ cấu hình thực tế."""
+    configs = get_cached_boom_configs(crane_id)
+    if not configs: return []
+    return sorted(list(configs.keys()))
+
+def get_processed_specs(crane_id, cwt_name, boom_len):
+    """
+    Trả về thông số kỹ thuật chi tiết từ Object CraneData và Boom Config đã tính toán.
+    """
+    crane = manager.get_crane(crane_id)
+    if not crane: return {}, "Không tìm thấy dữ liệu cẩu"
+
+    # Tìm cấu hình đối trọng
+    cwt_config = next((c for c in crane.counterweight_configs if c.name == cwt_name), None)
+    if not cwt_config: return {}, "Không tìm thấy cấu hình đối trọng"
+
+    # Lấy thông số Boom từ Logic
+    configs = get_cached_boom_configs(crane_id)
+    # Tìm length gần nhất (do float rounding)
+    closest_len = min(configs.keys(), key=lambda x: abs(x - boom_len)) if configs else boom_len
+    
+    # Nếu sai số quá lớn (>0.1m) thì fallback (không nên xảy ra nếu UI dùng đúng list)
+    if abs(closest_len - boom_len) > 0.1:
+        # Fallback logic cũ nếu không khớp
+        boom_mass = boom_len * 0.2
+        boom_cg = boom_len * 0.45
+    else:
+        cfg = configs[closest_len]
+        boom_mass = cfg.total_mass
+        boom_cg = cfg.cg_radius
+
+    specs = {
+        'boom_len': boom_len,
+        'boom_cg_radius': boom_cg,
+        'pivot_x': crane.boom_system.pivot_offset_x_m,
+        'pivot_z': crane.boom_system.pivot_offset_z_m,
+        'carbody_mass': crane.base_structure.carbody_mass_ton,
+        'upper_mass': crane.base_structure.upper_mass_ton,
+        'cwt_mass': cwt_config.total_mass_ton,
+        'boom_mass': boom_mass,
+        'cwt_radius': cwt_config.radius_m,
+        'carbody_cg_z': crane.base_structure.carbody_cg_z_m,
+        'upper_cg_z': crane.base_structure.upper_cg_z_m,
+        'cwt_z': cwt_config.cwt_z_m,
+        'track_L': crane.crawler_system.contact_length_m,
+        'track_W': crane.crawler_system.shoe_width_m,
+        'track_gauge': crane.crawler_system.track_gauge_m
+    }
+    return specs, None
+
+# --- QUẢN LÝ CẨU UI (IMPROVED) ---
+def render_crane_management():
+    st.markdown("### 🛠️ QUẢN LÝ THƯ VIỆN CẨU")
+    
+    # Initialize Session State
+    if 'edit_crane_id' not in st.session_state:
+        st.session_state.edit_crane_id = None
+    if 'duplicate_crane_id' not in st.session_state:
+        st.session_state.duplicate_crane_id = None
+
+    tab_list, tab_add = st.tabs(["📂 Danh sách & Tìm kiếm", "✏️ Thêm Mới / Chỉnh Sửa"])
+    
+    # --- TAB 1: LIST & SEARCH ---
+    with tab_list:
+        c_search, c_sort = st.columns([3, 1])
+        search_term = c_search.text_input("🔍 Tìm kiếm Model", placeholder="Nhập tên hoặc ID cẩu...")
+        
+        cranes = manager.get_all_cranes()
+        if search_term:
+            cranes = [c for c in cranes if search_term.lower() in c.model_name.lower() or search_term.lower() in c.id.lower()]
+            
+        if not cranes:
+            st.info("Không tìm thấy dữ liệu cẩu phù hợp.")
+        else:
+            st.success(f"Tìm thấy {len(cranes)} model.")
+            
+            # Grid Layout
+            cols = st.columns(3)
+            for i, c in enumerate(cranes):
+                with cols[i % 3]:
+                    with st.container(border=True):
+                        st.markdown(f"#### 🏗️ {c.model_name}")
+                        st.caption(f"ID: `{c.id}`")
+                        st.markdown(f"**Max Cap:** `{c.max_capacity_ton} T`")
+                        
+                        # Mini Stats
+                        ms1, ms2 = st.columns(2)
+                        ms1.metric("Upper", f"{c.base_structure.upper_mass_ton}t")
+                        ms2.metric("Track", f"{c.crawler_system.contact_length_m}m")
+                        
+                        # Actions
+                        b1, b2, b3 = st.columns([1, 1, 1])
+                        if b1.button("✏️", key=f"edit_{c.id}", help="Chỉnh sửa"):
+                            st.session_state.edit_crane_id = c.id
+                            st.session_state.duplicate_crane_id = None
+                            st.rerun()
+                        
+                        if b2.button("📋", key=f"dup_{c.id}", help="Nhân bản"):
+                            st.session_state.duplicate_crane_id = c.id
+                            st.session_state.edit_crane_id = None # Switch to add mode with pre-fill
+                            st.rerun()
+                            
+                        if b3.button("🗑️", key=f"del_{c.id}", help="Xóa"):
+                            if manager.delete_crane(c.id):
+                                st.success("Đã xóa!")
+                                if st.session_state.edit_crane_id == c.id:
+                                    st.session_state.edit_crane_id = None
+                                st.rerun()
+
+    # --- TAB 2: ADD / EDIT ---
+    with tab_add:
+        # Determine Mode
+        edit_id = st.session_state.edit_crane_id
+        dup_id = st.session_state.duplicate_crane_id
+        
+        edit_obj = None
+        if edit_id:
+            edit_obj = manager.get_crane(edit_id)
+            st.subheader(f"✏️ Đang chỉnh sửa: {edit_obj.model_name}")
+            if st.button("❌ Hủy Chỉnh Sửa"):
+                st.session_state.edit_crane_id = None
+                st.rerun()
+        elif dup_id:
+            dup_obj = manager.get_crane(dup_id)
+            if dup_obj:
+                st.subheader(f"📋 Đang nhân bản từ: {dup_obj.model_name}")
+                # Create a copy for pre-filling, but treat as new (no ID lock)
+                edit_obj = dup_obj
+                # Reset ID for new entry
+                # We don't change edit_obj.id here to avoid messing up reference, 
+                # but we will handle it in default values.
+            if st.button("❌ Hủy Nhân Bản"):
+                st.session_state.duplicate_crane_id = None
+                st.rerun()
+        else:
+            st.subheader("🆕 Thêm Model Cẩu Mới")
+
+        # Prepare Default Values
+        # If duplicating, we clear ID but keep others. If editing, we keep all.
+        d_id = edit_obj.id if (edit_obj and not dup_id) else ("" if not dup_id else f"{edit_obj.id}_COPY")
+        d_name = edit_obj.model_name if edit_obj else ""
+        d_cap = edit_obj.max_capacity_ton if edit_obj else 80.0
+        
+        d_upper = edit_obj.base_structure.upper_mass_ton if edit_obj else 30.0
+        d_carbody = edit_obj.base_structure.carbody_mass_ton if edit_obj else 10.0
+        
+        d_gauge = edit_obj.crawler_system.track_gauge_m if edit_obj else 5.0
+        d_trk_len = edit_obj.crawler_system.contact_length_m if edit_obj else 6.0
+        d_shoe = edit_obj.crawler_system.shoe_width_m if edit_obj else 0.8
+        d_trk_mass = edit_obj.crawler_system.track_mass_per_side_ton if edit_obj else 10.0
+        
+        d_cwt_mass = edit_obj.counterweight_configs[0].total_mass_ton if edit_obj and edit_obj.counterweight_configs else 30.0
+        d_cwt_rad = edit_obj.counterweight_configs[0].radius_m if edit_obj and edit_obj.counterweight_configs else 4.5
+        
+        d_piv_x = edit_obj.boom_system.pivot_offset_x_m if edit_obj else 0.0
+        d_piv_z = edit_obj.boom_system.pivot_offset_z_m if edit_obj else 1.8
+        
+        d_base_len = edit_obj.boom_system.base_section.length_m if edit_obj else 6.0
+        d_base_mass = edit_obj.boom_system.base_section.mass_ton if edit_obj else 2.0
+        d_base_cg = edit_obj.boom_system.base_section.cg_percent if edit_obj else 0.5
+        
+        d_tip_len = edit_obj.boom_system.tip_section.length_m if edit_obj else 6.0
+        d_tip_mass = edit_obj.boom_system.tip_section.mass_ton if edit_obj else 1.5
+        d_tip_cg = edit_obj.boom_system.tip_section.cg_percent if edit_obj else 0.5
+        
+        # Inserts
+        if edit_obj:
+            default_inserts = [
+                {"ID": i.id, "Length (m)": i.length_m, "Mass (ton)": i.mass_ton, "Quantity": getattr(i, 'quantity', 1)}
+                for i in edit_obj.boom_system.inserts
+            ]
+        else:
+            default_inserts = [
+                {"ID": "3m", "Length (m)": 3.0, "Mass (ton)": 0.5, "Quantity": 2},
+                {"ID": "6m", "Length (m)": 6.0, "Mass (ton)": 0.9, "Quantity": 2},
+                {"ID": "12m", "Length (m)": 12.0, "Mass (ton)": 1.6, "Quantity": 1},
+            ]
+
+        with st.form("crane_form"):
+            # Use Tabs for cleaner UI
+            t_gen, t_crawl, t_boom, t_cwt = st.tabs(["ℹ️ Thông tin chung", "🚜 Cấu trúc & Di chuyển", "🏗️ Boom System", "⚖️ Đối trọng"])
+            
+            with t_gen:
+                c1, c2 = st.columns(2)
+                c_id = c1.text_input("Mã Cẩu (ID)", value=d_id, disabled=bool(edit_id), help="ID là duy nhất")
+                c_name = c2.text_input("Tên Model", value=d_name)
+                c_cap = st.number_input("Sức nâng Max (Tấn)", value=d_cap)
+            
+            with t_crawl:
+                st.markdown("**Cấu trúc cơ sở**")
+                c1, c2 = st.columns(2)
+                upper_mass = c1.number_input("Khối lượng quay (Upper Mass)", value=d_upper)
+                carbody_mass = c2.number_input("Khối lượng Carbody", value=d_carbody)
+                
+                st.markdown("**Hệ thống di chuyển (Crawler)**")
+                c3, c4 = st.columns(2)
+                track_gauge = c3.number_input("Khoảng cách tâm xích (Gauge)", value=d_gauge)
+                track_len = c4.number_input("Chiều dài tiếp đất (Contact Length)", value=d_trk_len)
+                shoe_width = c3.number_input("Bề rộng bản xích (Shoe Width)", value=d_shoe)
+                track_mass = c4.number_input("Khối lượng 1 bên xích", value=d_trk_mass)
+
+            with t_boom:
+                st.markdown("**Pivot Point**")
+                c1, c2 = st.columns(2)
+                pivot_x = c1.number_input("Pivot Offset X", value=d_piv_x)
+                pivot_z = c2.number_input("Pivot Offset Z", value=d_piv_z)
+                
+                st.markdown("**Base & Tip**")
+                c_base, c_tip = st.columns(2)
+                with c_base:
+                    st.caption("Đốt Gốc (Base)")
+                    base_len = st.number_input("L Gốc (m)", value=d_base_len)
+                    base_mass = st.number_input("M Gốc (Tấn)", value=d_base_mass)
+                    base_cg = st.number_input("COG Gốc (%)", value=d_base_cg, min_value=0.0, max_value=1.0)
+                with c_tip:
+                    st.caption("Đốt Ngọn (Tip)")
+                    tip_len = st.number_input("L Ngọn (m)", value=d_tip_len)
+                    tip_mass = st.number_input("M Ngọn (Tấn)", value=d_tip_mass)
+                    tip_cg = st.number_input("COG Ngọn (%)", value=d_tip_cg, min_value=0.0, max_value=1.0)
+
+                st.markdown("**Danh sách Insert (Đốt nối)**")
+                edited_inserts = st.data_editor(
+                    default_inserts,
+                    num_rows="dynamic",
+                    column_config={
+                        "ID": st.column_config.TextColumn("Mã", required=True),
+                        "Length (m)": st.column_config.NumberColumn("Dài (m)", format="%.1f"),
+                        "Mass (ton)": st.column_config.NumberColumn("Nặng (T)", format="%.2f"),
+                        "Quantity": st.column_config.NumberColumn("SL", step=1),
+                    },
+                    width="stretch",
+                    key="inserts_editor"
+                )
+
+            with t_cwt:
+                st.info("Hiện tại chỉ hỗ trợ cấu hình đối trọng chuẩn (Standard).")
+                c1, c2 = st.columns(2)
+                cwt_mass = c1.number_input("Khối lượng đối trọng (Tấn)", value=d_cwt_mass)
+                cwt_rad = c2.number_input("Bán kính đối trọng (m)", value=d_cwt_rad)
+            
+            st.markdown("---")
+            btn_text = "💾 Cập nhật Model" if edit_id else "💾 Lưu Cẩu Mới"
+            submitted = st.form_submit_button(btn_text, use_container_width=True)
+            
+            if submitted:
+                if not c_id or not c_name:
+                    st.error("Vui lòng nhập ID và Tên Model")
+                else:
+                    # Process Inserts
+                    processed_inserts = []
+                    for row in edited_inserts:
+                        if row["ID"]: 
+                            processed_inserts.append(
+                                BoomInsert(
+                                    id=str(row["ID"]),
+                                    length_m=float(row["Length (m)"]),
+                                    mass_ton=float(row["Mass (ton)"]),
+                                    quantity=int(row["Quantity"])
+                                )
+                            )
+
+                    new_crane = CraneData(
+                        id=c_id,
+                        model_name=c_name,
+                        max_capacity_ton=c_cap,
+                        base_structure=BaseStructure(
+                            upper_mass_ton=upper_mass,
+                            carbody_mass_ton=carbody_mass
+                        ),
+                        crawler_system=CrawlerSystem(
+                            track_mass_per_side_ton=track_mass,
+                            contact_length_m=track_len,
+                            shoe_width_m=shoe_width,
+                            track_gauge_m=track_gauge
+                        ),
+                        counterweight_configs=[
+                            CounterweightConfig(
+                                name=f"Standard {cwt_mass}T",
+                                total_mass_ton=cwt_mass,
+                                radius_m=cwt_rad
+                            )
+                        ],
+                        boom_system=BoomSystem(
+                            pivot_offset_x_m=pivot_x,
+                            pivot_offset_z_m=pivot_z,
+                            base_section=BoomSection(length_m=base_len, mass_ton=base_mass, cg_percent=base_cg),
+                            tip_section=BoomSection(length_m=tip_len, mass_ton=tip_mass, cg_percent=tip_cg),
+                            inserts=processed_inserts
+                        )
+                    )
+                    
+                    if edit_id:
+                        # Update Mode
+                        if manager.update_crane(c_id, new_crane):
+                            st.success(f"Đã cập nhật {c_name}!")
+                            st.session_state.edit_crane_id = None
+                            st.rerun()
+                        else:
+                            st.error("Cập nhật thất bại!")
+                    else:
+                        # Add Mode
+                        if manager.add_crane(new_crane):
+                            st.success(f"Đã thêm {c_name} thành công!")
+                            st.session_state.duplicate_crane_id = None # Clear dup state
+                            st.rerun()
+                        else:
+                            st.error("ID đã tồn tại!")
 
 # --- HELPER: ROBUST PEAK FINDER ---
 def get_peak_pressure_in_region(x_center, y_center, width, length, mesh_obj, pressure_map):
@@ -104,15 +432,12 @@ def draw_pressure_profile_visual(specs, sol_res, mat_config, limit_p, mesh_obj=N
     """
     Vẽ bản đồ áp lực và hiển thị 4 góc.
     """
-    # CAD Colors
-    C_STEEL = '#94a3b8'      
-    C_TRACK_OUTLINE = '#334155' 
-    C_MAT = '#f1f5f9'        
-    C_MAT_BORDER = '#94a3b8' 
-    C_DIM_LINE = '#64748b'   
+    # [FIX] Dynamic Color Scale
+    p_max_actual = sol_res['pressure_max'] / G_CONST if sol_res else 0
+    vmax_val = max(limit_p * 1.1, p_max_actual)
     
     cmap = LinearSegmentedColormap.from_list("eng_grad", ["#ffffff", "#60a5fa", "#facc15", "#ef4444"])
-    norm = Normalize(vmin=0, vmax=limit_p * 1.1)
+    norm = Normalize(vmin=0, vmax=vmax_val)
 
     # Lấy thông số
     gauge = specs['track_gauge']
@@ -161,7 +486,7 @@ def draw_pressure_profile_visual(specs, sol_res, mat_config, limit_p, mesh_obj=N
     ax.set_xlim(-limit_x, limit_x); ax.set_ylim(-limit_y, limit_y)
 
     # --- HELPERS ---
-    def draw_dim_arrow(p1, p2, text, offset=0, color=C_DIM_LINE):
+    def draw_dim_arrow(p1, p2, text, offset=0, color=COLOR_DIM_LINE):
         x1, y1 = p1; x2, y2 = p2
         is_vert = abs(x1-x2) < 0.1
         
@@ -242,13 +567,13 @@ def draw_pressure_profile_visual(specs, sol_res, mat_config, limit_p, mesh_obj=N
 
         # C. XÍCH CẨU (Lớp trên cùng)
         ax.add_patch(patches.Rectangle((center_x - trk_W/2, -trk_L/2), trk_W, trk_L,
-                                     facecolor='none', edgecolor=C_TRACK_OUTLINE, lw=2, zorder=10))
+                                     facecolor='none', edgecolor=COLOR_TRACK_OUTLINE, lw=2, zorder=10))
         n_pads = 12
         pad_step = trk_L / n_pads
         for y in np.arange(-trk_L/2, trk_L/2, pad_step):
-            ax.plot([center_x - trk_W/2, center_x + trk_W/2], [y, y], color=C_TRACK_OUTLINE, lw=0.5, alpha=0.6, zorder=10)
-        ax.plot(center_x, trk_L/2 + 0.2, '^', color=C_TRACK_OUTLINE, ms=6, zorder=10)
-        ax.plot(center_x, -trk_L/2 - 0.2, 'v', color=C_TRACK_OUTLINE, ms=6, zorder=10)
+            ax.plot([center_x - trk_W/2, center_x + trk_W/2], [y, y], color=COLOR_TRACK_OUTLINE, lw=0.5, alpha=0.6, zorder=10)
+        ax.plot(center_x, trk_L/2 + 0.2, '^', color=COLOR_TRACK_OUTLINE, ms=6, zorder=10)
+        ax.plot(center_x, -trk_L/2 - 0.2, 'v', color=COLOR_TRACK_OUTLINE, ms=6, zorder=10)
 
         # D. KÍCH THƯỚC
         side = 1 if center_x > 0 else -1
@@ -283,15 +608,15 @@ def draw_pressure_profile_visual(specs, sol_res, mat_config, limit_p, mesh_obj=N
     draw_dim_arrow((-gauge/2, limit_y - 0.8), (gauge/2, limit_y - 0.8), f"{gauge}m", offset=0.3)
 
     beam_h = 0.4
-    ax.add_patch(patches.Rectangle((-gauge/2, -beam_h/2), gauge, beam_h, facecolor=C_STEEL, edgecolor='none', zorder=5))
+    ax.add_patch(patches.Rectangle((-gauge/2, -beam_h/2), gauge, beam_h, facecolor=COLOR_STEEL, edgecolor='none', zorder=5))
     
     cb_w = gauge - trk_W - 1.0; cb_h = cb_w * 0.8 
     if cb_h > trk_L * 0.6: cb_h = trk_L * 0.6
     
-    rect_cb = patches.Rectangle((-cb_w/2, -cb_h/2), cb_w, cb_h, facecolor='#f1f5f9', edgecolor=C_STEEL, lw=2, zorder=6)
+    rect_cb = patches.Rectangle((-cb_w/2, -cb_h/2), cb_w, cb_h, facecolor='#f1f5f9', edgecolor=COLOR_STEEL, lw=2, zorder=6)
     ax.add_patch(rect_cb)
-    ax.plot([-cb_w/2, cb_w/2], [-cb_h/2, cb_h/2], color=C_STEEL, lw=1, alpha=0.3, zorder=6)
-    ax.plot([-cb_w/2, cb_w/2], [cb_h/2, -cb_h/2], color=C_STEEL, lw=1, alpha=0.3, zorder=6)
+    ax.plot([-cb_w/2, cb_w/2], [-cb_h/2, cb_h/2], color=COLOR_STEEL, lw=1, alpha=0.3, zorder=6)
+    ax.plot([-cb_w/2, cb_w/2], [cb_h/2, -cb_h/2], color=COLOR_STEEL, lw=1, alpha=0.3, zorder=6)
 
     r_slew = min(cb_w, cb_h) * 0.4
     ax.add_patch(patches.Circle((0,0), r_slew, facecolor='white', edgecolor=COLOR_ACCENT, lw=2, zorder=7))
@@ -317,7 +642,7 @@ def draw_pressure_profile_visual(specs, sol_res, mat_config, limit_p, mesh_obj=N
     ax.add_patch(patches.Rectangle((cbar_x, cbar_y), cbar_w, cbar_h, fill=False, edgecolor='#94a3b8', lw=0.5, zorder=11))
     
     ax.text(cbar_x, cbar_y+cbar_h+0.15, "0 t/m²", ha='center', fontsize=7, color='#64748b')
-    ax.text(cbar_x+cbar_w, cbar_y+cbar_h+0.15, f"{limit_p*1.1:.1f}", ha='center', fontsize=7, color=COLOR_DANGER, fontweight='bold')
+    ax.text(cbar_x+cbar_w, cbar_y+cbar_h+0.15, f"{vmax_val:.1f}", ha='center', fontsize=7, color=COLOR_DANGER, fontweight='bold')
     ax.text(0, cbar_y+cbar_h+0.15, "GROUND PRESSURE", ha='center', fontsize=7, fontweight='bold', color='#334155')
 
     return fig, l_L, l_R, e_L, e_R, pct_L, pct_R, corners
@@ -364,35 +689,19 @@ def draw_polar_chart_pro(angles, p_values, current_slew, limit_p=30.0):
     
     return fig
 
-@st.cache_data(show_spinner=False)
-def calculate_polar_profile(specs, load_mass, boom_angle, soil_ks, mat_config):
-    # Tăng số điểm quét từ 10 độ lên 5 độ để Polar mịn hơn
-    mesh_gen = AdvancedMeshGenerator(mesh_size=0.1) 
-    L_sim = specs['track_L']
-    if mat_config['use_left']: L_sim = max(L_sim, mat_config['L_left'])
-    if mat_config['use_right']: L_sim = max(L_sim, mat_config['L_right'])
-    mesh_gen.create_rectangular_mesh(L_sim*2.2, specs['track_gauge']*2.2, default_Ks=soil_ks)
-    solver = SoilStructureSolver(mesh_gen)
-    physics_engine = AdvancedCranePhysics(specs)
-    solve_specs = specs.copy()
-    if mat_config['use_left'] or mat_config['use_right']:
-        solve_specs['track_L'] = L_sim
-        solve_specs['track_W'] = max(specs['track_W'], mat_config.get('W_left',0), mat_config.get('W_right',0))
-    angles = np.arange(0, 360, 1) # 1 degree step
-    p_max_values = []
-    for ang in angles:
-        phys_angle = 90 - ang
-        phys_res = physics_engine.calculate_state(load_mass, boom_angle, phys_angle)
-        sol_res, _ = solver.solve_equilibrium(solve_specs, phys_res, chassis_angle=0)
-        val = sol_res['pressure_max'] / G_CONST if sol_res else 0
-        p_max_values.append(val)
-    angles = np.append(angles, 360)
-    p_max_values = np.append(p_max_values, p_max_values[0])
-    return angles, np.array(p_max_values)
-
 # ==============================================================================
 # MAIN UI LAYOUT
 # ==============================================================================
+
+# Sidebar Mode Selection
+mode = st.sidebar.radio("Chế độ", ["🔥 Tính toán Áp lực", "🛠️ Quản lý Thư viện Cẩu"])
+
+if mode == "🛠️ Quản lý Thư viện Cẩu":
+    render_crane_management()
+    st.stop() # Stop execution here for management mode
+
+# --- CALCULATOR MODE ---
+
 
 with st.sidebar:
     st.markdown("### 🏗️ CẤU HÌNH CẨU")
@@ -427,35 +736,36 @@ with st.sidebar:
                     mat_config['use_right'] = True
                     mat_config['L_right'] = st.number_input("L Phải (m)", value=6.0)
                     mat_config['W_right'] = st.number_input("W Phải (m)", value=2.0)
-        
-        limit_pressure = st.number_input("P-Allow (t/m²)", value=30.0)
-        soil_ks = 30000
 
-    st.markdown("### 📦 TẢI TRỌNG")
-    load_mass = st.number_input("Khối lượng Hàng (Tấn)", value=80.0)
-    radius = st.number_input("Bán kính (m)", value=12.0)
-    
-    # [NEW] SLEW INTERFACE (Slider + Circle Visual)
+    with st.expander("3. TẢI TRỌNG & BÁN KÍNH", expanded=True):
+        load_mass = st.number_input("Tải trọng (Tấn)", value=50.0, step=1.0)
+        radius = st.number_input("Bán kính (m)", value=12.0, step=0.5)
+
+    with st.expander("4. THÔNG SỐ ĐẤT", expanded=True):
+        soil_ks = st.number_input("Hệ số nền Ks (kN/m3)", value=10000.0, step=1000.0)
+        limit_pressure = st.number_input("Giới hạn áp lực (t/m2)", value=20.0, step=1.0)
+        
+        # --- AI PREDICTION UI ---
+        if st.checkbox("🔮 Dự đoán đất (AI)", value=False):
+            st.info("Sử dụng AI để gợi ý Ks và P_allow")
+            c_soil, c_moist = st.columns(2)
+            soil_type = c_soil.selectbox("Loại đất", ["Clay", "Sand", "Silt", "Gravel"])
+            moisture = c_moist.selectbox("Độ ẩm", ["Low", "Medium", "High"])
+            
+            if st.button("Áp dụng gợi ý"):
+                pred_ks, pred_p = ai_agent.OfflineAIAgent().predict_soil_params(soil_type, moisture)
+                st.success(f"Gợi ý: Ks={pred_ks:.0f}, P_allow={pred_p:.1f}")
+
     st.markdown("---")
     st.markdown("**GÓC QUAY (Slew Angle)**")
     
     col_sl_1, col_sl_2 = st.columns([2, 1])
     
-    with col_sl_1:
+    with col_sl_1: # Fixed indentation
+
         # Slider interaction
-        slew_angle = st.slider("Góc (Độ)", 0, 360, 45)
-    
-    with col_sl_2:
-        # Small visual feedback
-        fig_mini, ax_mini = plt.subplots(figsize=(1.2, 1.2), facecolor='#f8fafc')
-        ax_mini.set_aspect('equal')
-        ax_mini.axis('off')
-        ax_mini.add_patch(patches.Circle((0,0), 1, fill=False, edgecolor='#64748b', lw=1.5))
-        rad_mini = np.radians(90 - slew_angle)
-        ax_mini.arrow(0, 0, 0.8*np.cos(rad_mini), 0.8*np.sin(rad_mini), 
-                     head_width=0.25, head_length=0.2, fc='#0284c7', ec='#0284c7', lw=1.5)
-        ax_mini.add_patch(patches.Rectangle((-0.3, -0.5), 0.6, 1.0, fill=False, edgecolor='#94a3b8', lw=0.8, linestyle='--'))
-        st.pyplot(fig_mini, use_container_width=False)
+        slew_angle = st.slider("Góc quay (độ)", 0, 360, 0, step=5)
+
 
 # PROCESS DATA
 specs, _ = get_processed_specs(crane_id, cwt_name, boom_len)
@@ -480,8 +790,16 @@ if mat_config['use_left'] or mat_config['use_right']:
 
 mesh_gen.create_rectangular_mesh(sim_L*2.5, specs['track_gauge']*2.5, default_Ks=soil_ks)
 solver = SoilStructureSolver(mesh_gen)
-sol_res, err = solver.solve_equilibrium(solve_specs, phys_res)
-if err: st.error(err); st.stop()
+
+# [FIX] Added Error Handling
+try:
+    sol_res, err = solver.solve_equilibrium(solve_specs, phys_res)
+    if err: 
+        st.error(f"Lỗi tính toán: {err}")
+        st.stop()
+except Exception as e:
+    st.error(f"Lỗi nghiêm trọng: {str(e)}")
+    st.stop()
 
 # DASHBOARD HEADER (UPDATED PHASE 2)
 p_max = sol_res['pressure_max'] / G_CONST
@@ -518,17 +836,27 @@ with k6:
 st.markdown("---")
 
 # DASHBOARD BODY
-col_main, col_side = st.columns([2.5, 1])
+# DASHBOARD BODY
+c_map, c_polar = st.columns([2, 1])
 
-with col_main:
+with c_map:
     st.markdown("#### 🗺️ BẢN ĐỒ ÁP LỰC CHI TIẾT")
     # [FIX] Nhận thêm biến corners từ hàm vẽ
     fig_map, lL, lR, eL, eR, pct_L, pct_R, corners = draw_pressure_profile_visual(specs, sol_res, mat_config, limit_pressure, mesh_gen, slew_angle)
     st.pyplot(fig_map, width='stretch')
 
-with col_side:
-    st.markdown("#### 📊 THÔNG SỐ CHI TIẾT")
-    
+with c_polar:
+    st.markdown("#### 🧭 SƠ ĐỒ ỔN ĐỊNH°")
+    angles, vals = calculate_polar_profile(specs, load_mass, boom_angle, soil_ks, mat_config)
+    fig_polar = draw_polar_chart_pro(angles, vals, slew_angle, limit_pressure)
+    st.pyplot(fig_polar, width='stretch')
+
+st.markdown("---")
+st.markdown("#### 📊 THÔNG SỐ CHI TIẾT")
+
+c_stat1, c_stat2 = st.columns(2)
+
+with c_stat1:
     # Display 4 Corners (Lấy giá trị từ hàm vẽ để đồng bộ)
     st.markdown("""
     <div class="info-panel">
@@ -552,34 +880,137 @@ with col_side:
             </div>
         </div>
     </div>
-    <div style='height: 10px'></div>
     """.format(corners['FL'], corners['FR'], corners['RL'], corners['RR']), unsafe_allow_html=True)
-    
+
+with c_stat2:
     # Card Left
     st.markdown(f"""
     <div class="info-panel">
-        <div class="panel-title">LEFT TRACK (Xích Trái) {'<span class="badge-mat">MATS</span>' if mat_config['use_left'] else ''}</div>
-        <div class="track-row"><span class="track-label">Tải trọng:</span> <span class="track-val">{lL:.1f} T</span></div>
-        <div class="track-row"><span class="track-label">Hiệu quả:</span> <span class="track-val">{pct_L:.0f}%</span></div>
-        <div class="track-row"><span class="track-label">Chiều dài ép:</span> <span class="track-val">{eL:.2f} m</span></div>
+        <div class="panel-title">TRACK INFO (Xích & Tấm lót) {'<span class="badge-mat">MATS</span>' if mat_config['use_left'] or mat_config['use_right'] else ''}</div>
+        <div style="display: flex; justify-content: space-between;">
+            <div style="width: 48%;">
+                <div class="track-row" style="font-weight:bold; border-bottom:1px solid #eee;">LEFT TRACK</div>
+                <div class="track-row"><span class="track-label">Tải trọng:</span> <span class="track-val">{lL:.1f} T</span></div>
+                <div class="track-row"><span class="track-label">Hiệu quả:</span> <span class="track-val">{pct_L:.0f}%</span></div>
+                <div class="track-row"><span class="track-label">Chiều dài ép:</span> <span class="track-val">{eL:.2f} m</span></div>
+            </div>
+            <div style="width: 48%;">
+                <div class="track-row" style="font-weight:bold; border-bottom:1px solid #eee;">RIGHT TRACK</div>
+                <div class="track-row"><span class="track-label">Tải trọng:</span> <span class="track-val">{lR:.1f} T</span></div>
+                <div class="track-row"><span class="track-label">Hiệu quả:</span> <span class="track-val">{pct_R:.0f}%</span></div>
+                <div class="track-row"><span class="track-label">Chiều dài ép:</span> <span class="track-val">{eR:.2f} m</span></div>
+            </div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
+
+# --- AI AGENT SECTION (BELOW DASHBOARD) ---
+st.markdown("---")
+
+# Initialize AI Learning
+from backend.ai_learning import CraneAILearning
+if 'ai_learner' not in st.session_state:
+    st.session_state.ai_learner = CraneAILearning()
+
+learner = st.session_state.ai_learner
+
+# LOGGING LOGIC (Auto-log if calculation successful)
+if 'sol_res' in locals() and sol_res and not err:
+    # Prepare data
+    log_inputs = {
+        'load_mass': load_mass,
+        'radius': radius,
+        'boom_len': boom_len,
+        'slew_angle': slew_angle,
+        'soil_ks': soil_ks,
+        'cwt_mass': specs['cwt_mass']
+    }
+    log_outputs = {
+        'p_max': p_max,
+        'safety_factor': sf_bearing
+    }
+    # Log to CSV
+    learner.log_calculation(log_inputs, log_outputs)
+
+# AI PREDICTION (Quick Check)
+if learner.is_trained:
+    with st.sidebar.expander("🤖 AI Quick Check", expanded=True):
+        st.caption("Dự đoán nhanh kết quả:")
+        pred_inputs = {
+            'load_mass': load_mass,
+            'radius': radius,
+            'boom_len': boom_len,
+            'slew_angle': slew_angle,
+            'soil_ks': soil_ks,
+            'cwt_mass': specs['cwt_mass']
+        }
+        pred = learner.predict(pred_inputs)
+        if pred:
+            st.metric("P_max (AI)", f"{pred['p_max']:.2f} t/m²")
+            st.metric("Safety Factor (AI)", f"{pred['safety_factor']:.2f}")
+        else:
+            st.warning("AI chưa sẵn sàng.")
+
+st.header("🤖 AI AGENT (OFFLINE)")
+
+# Instantiate the agent
+agent = ai_agent.OfflineAIAgent()
+
+tab1, tab2, tab3 = st.tabs(["Tối ưu hóa Cấu hình", "Phân tích Rủi ro", "🧠 AI Self-Learning"])
+
+with tab1:
+    st.write("Tự động tìm kích thước tấm lót tối ưu để tiết kiệm chi phí.")
+    if st.button("🚀 Chạy Tối ưu hóa (Bayesian Opt)"):
+        with st.spinner("Đang chạy mô phỏng AI..."):
+            opt_res, msg = agent.optimize_configuration(
+                specs, load_mass, radius, boom_angle, slew_angle, soil_ks, limit_pressure
+            )
+        
+        if opt_res:
+            st.success("Đã tìm thấy cấu hình tối ưu!")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("L Tấm lót", f"{opt_res['optimal_L']} m")
+            c2.metric("W Tấm lót", f"{opt_res['optimal_W']} m")
+            c3.metric("Score (Cost)", f"{opt_res['min_cost_score']:.1f}")
+        else:
+            st.error(msg)
+
+with tab2:
+    st.write("Chạy mô phỏng Monte Carlo (100 lần) để đánh giá xác suất sự cố.")
+    if st.button("🎲 Chạy Phân tích Rủi ro"):
+        with st.spinner("Đang chạy 100 mô phỏng..."):
+            risk_res = agent.run_risk_analysis(
+                specs, load_mass, radius, boom_angle, slew_angle, soil_ks, limit_pressure, n_simulations=100
+            )
+        
+        if risk_res:
+            st.write(f"**Xác suất quá tải nền:** {risk_res['failure_prob_pct']:.1f}%")
+            st.write(f"**Áp lực Max trung bình:** {risk_res['mean_p_max']:.2f} t/m²")
+            st.write(f"**Độ lệch chuẩn:** {risk_res['std_p_max']:.2f}")
+            
+            if risk_res['failure_prob_pct'] > 5.0:
+                st.error("⚠️ Rủi ro cao! Cần xem xét lại cấu hình.")
+            else:
+                st.success("✅ Rủi ro thấp. An toàn.")
+
+with tab3:
+    st.markdown("### 🧠 AI Tự Học (Machine Learning)")
+    st.info("Hệ thống tự động ghi lại lịch sử tính toán để 'học' và đưa ra dự đoán nhanh.")
     
-    st.markdown("<div style='height: 10px'></div>", unsafe_allow_html=True)
+    # Show Stats
+    history = learner.get_history()
+    st.metric("Dữ liệu đã học", f"{len(history)} bản ghi")
     
-    # Card Right
-    st.markdown(f"""
-    <div class="info-panel">
-        <div class="panel-title">RIGHT TRACK (Xích Phải) {'<span class="badge-mat">MATS</span>' if mat_config['use_right'] else ''}</div>
-        <div class="track-row"><span class="track-label">Tải trọng:</span> <span class="track-val">{lR:.1f} T</span></div>
-        <div class="track-row"><span class="track-label">Hiệu quả:</span> <span class="track-val">{pct_R:.0f}%</span></div>
-        <div class="track-row"><span class="track-label">Chiều dài ép:</span> <span class="track-val">{eR:.2f} m</span></div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    st.markdown("<div style='height: 20px'></div>", unsafe_allow_html=True)
-    st.markdown("#### 🧭 SƠ ĐỒ ỔN ĐỊNH°")
-    
-    angles, vals = calculate_polar_profile(specs, load_mass, boom_angle, soil_ks, mat_config)
-    fig_polar = draw_polar_chart_pro(angles, vals, slew_angle, limit_pressure)
-    st.pyplot(fig_polar, width='stretch')
+    if not history.empty:
+        with st.expander("Xem lịch sử tính toán"):
+            st.dataframe(history.tail(10))
+            
+    if st.button("🎓 Huấn luyện lại Mô hình AI"):
+        with st.spinner("Đang training..."):
+            res = learner.train_model()
+        if "Success" in res:
+            st.success(res)
+        else:
+            st.error(res)
+
+

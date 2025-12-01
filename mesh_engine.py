@@ -1,28 +1,19 @@
-"""
-MODULE 1: ADVANCED MESH GENERATOR (SYMMETRIC FIX)
-Chức năng: Rời rạc hóa tấm lót và mô phỏng đặc tính địa chất.
-Update: Ép buộc lưới đối xứng qua tâm (0,0) tuyệt đối.
-"""
-
 import numpy as np
 from matplotlib.path import Path
 
 class AdvancedMeshGenerator:
-    def __init__(self, mesh_size=0.05):
+    """
+    MODULE 1: ADVANCED MESH GENERATOR (SYMMETRIC FIX)
+    Chức năng: Rời rạc hóa tấm lót và mô phỏng đặc tính địa chất.
+    """
+    def __init__(self, mesh_size=0.5):
         self.mesh_size = mesh_size
-        self.nodes_X = None       
-        self.nodes_Y = None       
-        self.Ks_matrix = None     
-        self.active_mask = None   
-        self.dA = 0               
-        self.bounds = {'min_x': 0, 'max_x': 0, 'min_y': 0, 'max_y': 0}
-
-    def create_rectangular_mesh(self, L, W, default_Ks=5000):
-        # Tạo vertices cho hình chữ nhật
-        vertices = [
-            (-L/2, -W/2), (L/2, -W/2), (L/2, W/2), (-L/2, W/2)
-        ]
-        self.create_polygon_mesh(vertices, default_Ks)
+        self.nodes_X = None
+        self.nodes_Y = None
+        self.Ks_matrix = None
+        self.active_mask = None
+        self.dA = mesh_size**2
+        self.bounds = {}
 
     def create_polygon_mesh(self, vertices, default_Ks=5000):
         verts = np.array(vertices)
@@ -66,6 +57,18 @@ class AdvancedMeshGenerator:
         # 4. Gán địa chất
         self.Ks_matrix = np.zeros_like(self.nodes_X)
         self.Ks_matrix[self.active_mask] = default_Ks
+
+    def create_rectangular_mesh(self, L, W, default_Ks=5000):
+        # Helper for simple rect
+        half_L = L / 2
+        half_W = W / 2
+        vertices = [
+            (-half_W, -half_L),
+            (half_W, -half_L),
+            (half_W, half_L),
+            (-half_W, half_L)
+        ]
+        self.create_polygon_mesh(vertices, default_Ks)
 
     def modify_soil_property(self, shape_type, params, new_Ks):
         if self.nodes_X is None: return

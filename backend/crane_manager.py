@@ -28,7 +28,8 @@ class CraneManager:
             with open(self.data_file, 'w', encoding='utf-8') as f:
                 # model_dump_json is for Pydantic v2, using dict() and json.dump for compatibility if needed
                 # Assuming Pydantic v2 based on previous context, but let's be safe with json.dump
-                f.write(self.library.model_dump_json(indent=4))
+                # Use dict() and json.dumps for maximum compatibility across Pydantic versions
+                f.write(json.dumps(self.library.dict(), indent=4, default=str))
         except Exception as e:
             print(f"Error saving crane data: {e}")
 

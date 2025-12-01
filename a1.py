@@ -11,17 +11,63 @@ from mesh_engine import AdvancedMeshGenerator
 from analysis_engine import calculate_polar_profile
 import ai_agent
 from config import *
+import base64
+
+# [NEW] Set Page Config to Wide Mode
+st.set_page_config(
+    page_title="SMC Ground Pressure Analysis",
+    page_icon="cropped-LOGO-SMC-nho-02-2048x821.ico",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+def get_base64_image(image_path):
+    with open(image_path, "rb") as img_file:
+        return base64.b64encode(img_file.read()).decode()
+
+try:
+    logo_b64 = get_base64_image("cropped-LOGO-SMC-nho-02-2048x821.ico")
+    logo_html = f'<img src="data:image/x-icon;base64,{logo_b64}" style="height: 50px; vertical-align: middle; margin-right: 15px;">'
+    
+    # Watermark Image
+    watermark_b64 = get_base64_image("cropped-LOGO-SMC-nho-02-2048x821.png")
+except:
+    logo_html = ""
+    watermark_b64 = ""
 
 # --- CSS ---
 st.markdown(f"""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
-    .stApp {{ background-color: #f8fafc; font-family: 'Roboto', sans-serif; color: {COLOR_TEXT_MAIN}; }}
-    
-    div[data-testid="metric-container"] {{
-        background-color: white; border: 1px solid #e2e8f0; border-radius: 6px;
-        padding: 10px 15px; box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    .stApp {{ 
+        background-color: #f8fafc; 
+        font-family: 'Roboto', sans-serif; 
+        color: {COLOR_TEXT_MAIN}; 
     }}
+    
+    /* Watermark */
+    .stApp::before {{
+        content: "";
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-image: url("data:image/png;base64,{watermark_b64}");
+        background-repeat: no-repeat;
+        background-position: 60% 50%;
+        background-size: 50%;
+        opacity: 0.08;
+        pointer-events: none;
+        z-index: 0;
+    }}
+    
+    /* Ensure content is above watermark */
+    .block-container {{
+        position: relative;
+        z-index: 1;
+    }}
+
     div[data-testid="metric-container"] label {{ font-size: 0.75rem; font-weight: 600; color: #64748b; }}
     div[data-testid="metric-container"] div[data-testid="stMetricValue"] {{ font-size: 1.5rem; font-weight: 700; color: #0f172a; }}
     
@@ -57,19 +103,23 @@ st.markdown(f"""
     }}
     /* Reduce top whitespace */
     .block-container {{
-        padding-top: 1rem !important;
+        padding-top: 3rem !important;
         padding-bottom: 1rem !important;
     }}
 </style>
 """, unsafe_allow_html=True)
 
 # --- HEADER ---
-st.markdown("""
+st.markdown(f"""
     <div style="text-align: center; padding: 10px 0 20px 0; border-bottom: 2px solid #e2e8f0; margin-bottom: 20px;">
-        <h1 style="color: #0f172a; font-weight: 800; margin: 0; font-size: 2.2rem;">SMC GROUND PRESSURE</h1>
+        <div style="display: inline-flex; align-items: center; justify-content: center;">
+            {logo_html}
+            <h1 style="color: #0f172a; font-weight: 800; margin: 0; font-size: 2.2rem;">SMC GROUND PRESSURE</h1>
+        </div>
         <p style="color: #64748b; margin-top: 5px; font-size: 0.9rem;">Advanced Crane Ground Bearing Pressure Analysis</p>
     </div>
 """, unsafe_allow_html=True)
+
 
 # --- DATA & CONFIG ---
 # --- DATA & CONFIG ---
@@ -140,7 +190,8 @@ def get_processed_specs(crane_id, cwt_name, boom_len):
         'boom_cg_radius': boom_cg,
         'pivot_x': crane.boom_system.pivot_offset_x_m,
         'pivot_z': crane.boom_system.pivot_offset_z_m,
-        'carbody_mass': crane.base_structure.carbody_mass_ton + (cwt_config.carbody_cwt_ton if hasattr(cwt_config, 'carbody_cwt_ton') else 0.0),
+        'carbody_mass': crane.base_structure.carbody_mass_ton,
+        'carbody_cwt_mass': cwt_config.carbody_cwt_ton,
         'upper_mass': crane.base_structure.upper_mass_ton,
         'cwt_mass': cwt_config.total_mass_ton,
         'boom_mass': boom_mass,
@@ -297,7 +348,7 @@ def render_crane_management():
 
         with st.form("crane_form"):
             # Use Tabs for cleaner UI
-            t_gen, t_crawl, t_boom, t_cwt = st.tabs(["ℹ️ Thông tin chung", "🚜 Cấu trúc & Di chuyển", "🏗️ Boom System", "⚖️ Đối trọng"])
+            t_gen, t_crawl, t_boom, t_cwt, t_jib = st.tabs(["ℹ️ Thông tin chung", "🚜 Cấu trúc & Di chuyển", "🏗️ Boom System", "⚖️ Đối trọng", "📐 Fixed Jib"])
             
             with t_gen:
                 c1, c2 = st.columns(2)
@@ -366,6 +417,33 @@ def render_crane_management():
                     key="cwt_editor"
                 )
             
+            with t_jib:
+                st.info("Cấu hình Cần phụ (Fixed Jib)")
+                # Prepare default jibs
+                if edit_obj and hasattr(edit_obj, 'jib_configs'):
+                    default_jibs = [
+                        {
+                            "Length (m)": j.length_m,
+                            "Mass (ton)": j.mass_ton,
+                            "Offsets (deg)": ", ".join(map(str, j.offset_angles))
+                        }
+                        for j in edit_obj.jib_configs
+                    ]
+                else:
+                    default_jibs = []
+
+                edited_jibs = st.data_editor(
+                    default_jibs,
+                    num_rows="dynamic",
+                    column_config={
+                        "Length (m)": st.column_config.NumberColumn("Dài (m)", format="%.1f", required=True),
+                        "Mass (ton)": st.column_config.NumberColumn("Nặng (T)", format="%.2f", required=True),
+                        "Offsets (deg)": st.column_config.TextColumn("Góc nghiêng (cách nhau bởi phẩy)", help="Ví dụ: 10, 30", required=True),
+                    },
+                    width="stretch",
+                    key="jib_editor"
+                )
+
             st.markdown("---")
             btn_text = "💾 Cập nhật Model" if edit_id else "💾 Lưu Cẩu Mới"
             submitted = st.form_submit_button(btn_text, use_container_width=True)
@@ -386,6 +464,21 @@ def render_crane_management():
                                     quantity=int(row["Quantity"])
                                 )
                             )
+                    
+                    # Process Jibs
+                    processed_jibs = []
+                    for row in edited_jibs:
+                        try:
+                            offsets = [float(x.strip()) for x in row["Offsets (deg)"].split(",") if x.strip()]
+                            processed_jibs.append(
+                                JibConfig(
+                                    length_m=float(row["Length (m)"]),
+                                    mass_ton=float(row["Mass (ton)"]),
+                                    offset_angles=offsets
+                                )
+                            )
+                        except ValueError:
+                            st.warning(f"Lỗi định dạng góc nghiêng cho Jib dài {row['Length (m)']}m. Bỏ qua.")
 
                     new_crane = CraneData(
                         id=c_id,
@@ -416,7 +509,8 @@ def render_crane_management():
                             base_section=BoomSection(length_m=base_len, mass_ton=base_mass, cg_percent=base_cg),
                             tip_section=BoomSection(length_m=tip_len, mass_ton=tip_mass, cg_percent=tip_cg),
                             inserts=processed_inserts
-                        )
+                        ),
+                        jib_configs=processed_jibs
                     )
                     
                     if edit_id:
@@ -751,6 +845,35 @@ with st.sidebar:
         cwt_name = st.selectbox("Đối trọng", options[crane_id])
         valid_lens = get_valid_boom_lengths(crane_id)
         boom_len = st.select_slider("Chiều dài Cần (m)", options=valid_lens) if valid_lens else st.number_input("Cần (m)", 60.0)
+        
+        # Jib Configuration
+        # Get current crane object to check for Jibs
+        current_crane = manager.get_crane(crane_id)
+        has_jibs = current_crane and hasattr(current_crane, 'jib_configs') and len(current_crane.jib_configs) > 0
+        
+        use_jib = st.checkbox("Sử dụng Cần phụ (Fixed Jib)", value=False, disabled=not has_jibs)
+        if not has_jibs and use_jib:
+             st.warning("Model cẩu này chưa được cấu hình Jib. Vui lòng vào tab Quản lý để thêm.")
+             use_jib = False
+
+        jib_len = 0.0
+        jib_offset = 0.0
+        jib_mass = 0.0
+        
+        if use_jib:
+            # Get Jib Options from DB
+            jib_opts = {j.length_m: j for j in current_crane.jib_configs}
+            sorted_lens = sorted(list(jib_opts.keys()))
+            
+            c_jib1, c_jib2 = st.columns(2)
+            jib_len = c_jib1.selectbox("Jib Length (m)", sorted_lens)
+            
+            # Get offsets for selected length
+            selected_jib = jib_opts[jib_len]
+            jib_offsets = selected_jib.offset_angles
+            jib_offset = c_jib2.selectbox("Jib Offset (deg)", jib_offsets)
+            
+            jib_mass = selected_jib.mass_ton
 
     with st.expander("2. ĐỊA HÌNH & TẤM LÓT", expanded=True):
         c1, c2 = st.columns(2)
@@ -779,7 +902,22 @@ with st.sidebar:
         load_mass = st.number_input("Tải trọng (Tấn)", value=50.0, step=1.0)
         radius = st.number_input("Bán kính (m)", value=12.0, step=0.5)
         load_height_z = st.number_input("Chiều cao nâng Z (m)", value=0.0, step=1.0, help="Chiều cao cần đưa hàng lên")
-        slew_angle = st.slider("Góc quay (độ)", 0, 360, 0, step=5)
+        # Slew Angle with Sync
+        if 'slew_angle' not in st.session_state:
+            st.session_state.slew_angle = 0
+
+        def update_slew_slider():
+            st.session_state.slew_angle = st.session_state.slew_slider_key
+        def update_slew_input():
+            st.session_state.slew_angle = st.session_state.slew_input_key
+
+        c_slew1, c_slew2 = st.columns([3, 1])
+        with c_slew1:
+            st.slider("Góc quay (độ)", 0, 360, key="slew_slider_key", value=st.session_state.slew_angle, step=5, on_change=update_slew_slider)
+        with c_slew2:
+            st.number_input("Nhập góc", 0, 360, key="slew_input_key", value=st.session_state.slew_angle, step=1, on_change=update_slew_input)
+        
+        slew_angle = st.session_state.slew_angle
 
     with st.expander("4. THÔNG SỐ ĐẤT", expanded=True):
         soil_ks = st.number_input("Hệ số nền Ks (kN/m3)", value=10000.0, step=1000.0)
@@ -807,12 +945,21 @@ physics_engine = AdvancedCranePhysics(specs)
 reach = min(radius - specs['pivot_x'], boom_len * 0.99)
 boom_angle = np.degrees(np.arccos(reach/boom_len))
 
-# [NEW] Check Tip Height
-tip_height = specs['pivot_z'] + boom_len * np.sin(np.radians(boom_angle))
+# [NEW] Check Tip Height (Updated for Jib)
+if use_jib:
+    # Approx check for Jib
+    jib_rad = np.radians(boom_angle - jib_offset)
+    tip_height = specs['pivot_z'] + boom_len * np.sin(np.radians(boom_angle)) + jib_len * np.sin(jib_rad)
+else:
+    tip_height = specs['pivot_z'] + boom_len * np.sin(np.radians(boom_angle))
+
 if tip_height < load_height_z:
     st.warning(f"⚠️ Chiều cao đầu cần ({tip_height:.1f}m) thấp hơn chiều cao nâng yêu cầu ({load_height_z}m)!")
 
-phys_res = physics_engine.calculate_state(load_mass, boom_angle, 90 - slew_angle)
+phys_res = physics_engine.calculate_state(
+    load_mass, boom_angle, 90 - slew_angle, 
+    jib_length=jib_len, jib_offset_deg=jib_offset, jib_mass=jib_mass
+)
 
 mesh_gen = AdvancedMeshGenerator(mesh_size=0.05)
 solve_specs = specs.copy()
@@ -947,7 +1094,12 @@ with c_polar:
 st.markdown("---")
 st.markdown("#### 📊 THÔNG SỐ CHI TIẾT")
 
-c_stat1, c_stat2 = st.columns(2)
+# Calculate Max Pressure Angle from Polar Data
+max_p_idx = np.argmax(vals)
+max_p_val = vals[max_p_idx]
+max_p_angle = angles[max_p_idx]
+
+c_stat1, c_stat2, c_stat3 = st.columns([1.2, 1.2, 1])
 
 with c_stat1:
     # Display 4 Corners (Lấy giá trị từ hàm vẽ để đồng bộ)
@@ -972,8 +1124,11 @@ with c_stat1:
                 <div class="corner-val">{:.2f}</div>
             </div>
         </div>
+        <div style="margin-top: 10px; padding-top: 5px; border-top: 1px solid #eee; font-size: 0.9em; color: #d9534f;">
+            <strong>⚠️ Góc nguy hiểm nhất:</strong> {}° (P_max = {:.2f} t/m²)
+        </div>
     </div>
-    """.format(corners['FL'], corners['FR'], corners['RL'], corners['RR']), unsafe_allow_html=True)
+    """.format(corners['FL'], corners['FR'], corners['RL'], corners['RR'], max_p_angle, max_p_val), unsafe_allow_html=True)
 
 with c_stat2:
     # Card Left
@@ -993,6 +1148,24 @@ with c_stat2:
                 <div class="track-row"><span class="track-label">Hiệu quả:</span> <span class="track-val">{pct_R:.0f}%</span></div>
                 <div class="track-row"><span class="track-label">Chiều dài ép:</span> <span class="track-val">{eR:.2f} m</span></div>
             </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with c_stat3:
+    # Load Breakdown
+    total_load = phys_res['V_total_ton']
+    st.markdown(f"""
+    <div class="info-panel">
+        <div class="panel-title">CHI TIẾT TẢI TRỌNG (Tấn)</div>
+        <div class="track-row"><span class="track-label">Upper Structure:</span> <span class="track-val">{specs['upper_mass']:.1f}</span></div>
+        <div class="track-row"><span class="track-label">Carbody + Cwt:</span> <span class="track-val">{specs['carbody_mass'] + specs.get('carbody_cwt_mass', 0):.1f}</span></div>
+        <div class="track-row"><span class="track-label">Counterweight:</span> <span class="track-val">{specs['cwt_mass']:.1f}</span></div>
+        <div class="track-row"><span class="track-label">Boom System:</span> <span class="track-val">{specs['boom_mass']:.1f}</span></div>
+        <div class="track-row"><span class="track-label">Jib:</span> <span class="track-val">{jib_mass:.1f}</span></div>
+        <div class="track-row"><span class="track-label">Live Load:</span> <span class="track-val">{load_mass:.1f}</span></div>
+        <div class="track-row" style="border-top:2px solid #333; margin-top:5px; padding-top:5px; font-size: 1.1em;">
+            <span class="track-label"><strong>TOTAL:</strong></span> <span class="track-val"><strong>{total_load:.1f}</strong></span>
         </div>
     </div>
     """, unsafe_allow_html=True)

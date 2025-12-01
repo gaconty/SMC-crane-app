@@ -47,14 +47,33 @@ class AdvancedCranePhysics:
         moment_vec = np.cross(pos_vec, force_vec)
         return force_vec, moment_vec
 
-    def calculate_state(self, load_mass, boom_angle_deg, slew_angle_deg):
+    def calculate_state(self, load_mass, boom_angle_deg, slew_angle_deg, jib_length=0.0, jib_offset_deg=0.0, jib_mass=0.0):
         # 1. Kinematics
         theta = np.radians(boom_angle_deg)
         boom_dir = np.array([np.cos(theta), 0.0, np.sin(theta)])
         
         p_boom_cg_local = self.pos_pivot + (boom_dir * self.boom_cg_dist)
         p_tip_local = self.pos_pivot + (boom_dir * self.boom_len)
-        p_load_local = p_tip_local 
+        
+        # Jib Logic
+        if jib_length > 0:
+            # Jib angle relative to ground = Boom angle - Jib offset
+            jib_angle_deg = boom_angle_deg - jib_offset_deg
+            theta_jib = np.radians(jib_angle_deg)
+            jib_dir = np.array([np.cos(theta_jib), 0.0, np.sin(theta_jib)])
+            
+            # Jib CG (Assume middle)
+            p_jib_cg_local = p_tip_local + (jib_dir * (jib_length / 2.0))
+            # New Tip (Hook Point)
+            p_hook_local = p_tip_local + (jib_dir * jib_length)
+            
+            # Add Jib to bodies later
+            has_jib = True
+        else:
+            p_hook_local = p_tip_local
+            has_jib = False
+            
+        p_load_local = p_hook_local
         
         # 2. Slew Rotation
         Rot_Z = self._get_rotation_matrix_Z(slew_angle_deg)
@@ -71,11 +90,16 @@ class AdvancedCranePhysics:
         
         bodies = [
             (self.specs['carbody_mass'], p_carbody_world),
+            (self.specs.get('carbody_cwt_mass', 0.0), p_carbody_world), # Carbody Counterweight
             (self.specs['upper_mass'],   p_upper_world),
             (self.specs['cwt_mass'],     p_cwt_world),
             (self.specs['boom_mass'],    p_boom_world),
             (load_mass,                  p_load_world)
         ]
+        
+        if has_jib:
+            p_jib_world = Rot_Z @ p_jib_cg_local
+            bodies.append((jib_mass, p_jib_world))
         
         for m, p in bodies:
             f, m_vec = self._calc_wrench(m, p)
@@ -97,6 +121,9 @@ class AdvancedCranePhysics:
         
         Fx_ton = F_total_kN[0] / self.g_mag
         Fy_ton = F_total_kN[1] / self.g_mag
+        
+        # Calculate Tip Height (Z coordinate of hook)
+        tip_height = p_load_world[2]
 
         return {
             "V_total_ton": V_load_ton, # Đã chuẩn đơn vị Tấn
@@ -106,5 +133,6 @@ class AdvancedCranePhysics:
             "Fx_slide_ton": Fx_ton,
             "Fy_slide_ton": Fy_ton,
             "geom_radius": np.sqrt(p_load_world[0]**2 + p_load_world[1]**2),
-            "tip_pos_world": (p_load_world[0], p_load_world[1]) 
+            "tip_pos_world": (p_load_world[0], p_load_world[1]),
+            "tip_height": tip_height
         }

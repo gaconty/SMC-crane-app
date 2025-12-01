@@ -1,0 +1,65 @@
+{
+    "cranes": [
+        {
+            "id": "SANY_SCC1800A",
+            "model_name": "SANY SCC1800A",
+            "max_capacity_ton": 180.0,
+            "base_structure": {
+                "upper_mass_ton": 37.76,
+                "carbody_mass_ton": 0.0,
+                "carbody_cg_z_m": 0.8,
+                "upper_cg_z_m": 2.2
+            },
+            "crawler_system": {
+                "track_mass_per_side_ton": 19.5,
+                "contact_length_m": 8.58,
+                "shoe_width_m": 1.17,
+                "track_gauge_m": 5.93
+            },
+            "counterweight_configs": [
+                {
+                    "name": "Standard",
+                    "total_mass_ton": 68.0,
+                    "radius_m": 5.263,
+                    "carbody_cwt_ton": 20.0,
+                    "cwt_z_m": 2.5
+                }
+            ],
+            "boom_system": {
+                "pivot_offset_x_m": 1.128,
+                "pivot_offset_z_m": 2.034,
+                "base_section": {
+                    "length_m": 8.0,
+                    "mass_ton": 5.44,
+                    "cg_percent": 0.65
+                },
+                "tip_section": {
+                    "length_m": 8.0,
+                    "mass_ton": 3.06,
+                    "cg_percent": 0.5
+                },
+                "inserts": [
+                    {
+                        "id": "3m",
+                        "length_m": 3.0,
+                        "mass_ton": 0.79,
+                        "quantity": 2
+                    },
+                    {
+                        "id": "6m",
+                        "length_m": 6.0,
+                        "mass_ton": 1.27,
+                        "quantity": 2
+                    },
+                    {
+                        "id": "12m",
+                        "length_m": 12.0,
+                        "mass_ton": 2.36,
+                        "quantity": 2
+                    }
+                ]
+            },
+            "jib_configs": []
+        }
+    ]
+}

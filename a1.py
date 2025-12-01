@@ -1,5 +1,6 @@
 import streamlit as st
 import numpy as np
+import random
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.colors import LinearSegmentedColormap, Normalize
@@ -54,7 +55,20 @@ st.markdown(f"""
         display: flex; align-items: center; justify-content: space-between;
         background: white; padding: 10px; border-radius: 8px; border: 1px solid #e2e8f0;
     }}
+    /* Reduce top whitespace */
+    .block-container {{
+        padding-top: 1rem !important;
+        padding-bottom: 1rem !important;
+    }}
 </style>
+""", unsafe_allow_html=True)
+
+# --- HEADER ---
+st.markdown("""
+    <div style="text-align: center; padding: 10px 0 20px 0; border-bottom: 2px solid #e2e8f0; margin-bottom: 20px;">
+        <h1 style="color: #0f172a; font-weight: 800; margin: 0; font-size: 2.2rem;">SMC GROUND PRESSURE</h1>
+        <p style="color: #64748b; margin-top: 5px; font-size: 0.9rem;">Advanced Crane Ground Bearing Pressure Analysis</p>
+    </div>
 """, unsafe_allow_html=True)
 
 # --- DATA & CONFIG ---
@@ -126,7 +140,7 @@ def get_processed_specs(crane_id, cwt_name, boom_len):
         'boom_cg_radius': boom_cg,
         'pivot_x': crane.boom_system.pivot_offset_x_m,
         'pivot_z': crane.boom_system.pivot_offset_z_m,
-        'carbody_mass': crane.base_structure.carbody_mass_ton,
+        'carbody_mass': crane.base_structure.carbody_mass_ton + (cwt_config.carbody_cwt_ton if hasattr(cwt_config, 'carbody_cwt_ton') else 0.0),
         'upper_mass': crane.base_structure.upper_mass_ton,
         'cwt_mass': cwt_config.total_mass_ton,
         'boom_mass': boom_mass,
@@ -241,8 +255,21 @@ def render_crane_management():
         d_shoe = edit_obj.crawler_system.shoe_width_m if edit_obj else 0.8
         d_trk_mass = edit_obj.crawler_system.track_mass_per_side_ton if edit_obj else 10.0
         
-        d_cwt_mass = edit_obj.counterweight_configs[0].total_mass_ton if edit_obj and edit_obj.counterweight_configs else 30.0
-        d_cwt_rad = edit_obj.counterweight_configs[0].radius_m if edit_obj and edit_obj.counterweight_configs else 4.5
+        # Counterweights
+        if edit_obj and edit_obj.counterweight_configs:
+            default_cwts = [
+                {
+                    "Name": c.name,
+                    "Mass (ton)": c.total_mass_ton,
+                    "Radius (m)": c.radius_m,
+                    "Carbody Cwt (ton)": c.carbody_cwt_ton
+                }
+                for c in edit_obj.counterweight_configs
+            ]
+        else:
+            default_cwts = [
+                {"Name": "Standard", "Mass (ton)": 30.0, "Radius (m)": 4.5, "Carbody Cwt (ton)": 0.0}
+            ]
         
         d_piv_x = edit_obj.boom_system.pivot_offset_x_m if edit_obj else 0.0
         d_piv_z = edit_obj.boom_system.pivot_offset_z_m if edit_obj else 1.8
@@ -325,10 +352,19 @@ def render_crane_management():
                 )
 
             with t_cwt:
-                st.info("Hiện tại chỉ hỗ trợ cấu hình đối trọng chuẩn (Standard).")
-                c1, c2 = st.columns(2)
-                cwt_mass = c1.number_input("Khối lượng đối trọng (Tấn)", value=d_cwt_mass)
-                cwt_rad = c2.number_input("Bán kính đối trọng (m)", value=d_cwt_rad)
+                st.info("Quản lý các cấu hình đối trọng (Ví dụ: Standard, Superlift, Tray...)")
+                edited_cwts = st.data_editor(
+                    default_cwts,
+                    num_rows="dynamic",
+                    column_config={
+                        "Name": st.column_config.TextColumn("Tên Cấu hình", required=True),
+                        "Mass (ton)": st.column_config.NumberColumn("Khối lượng (T)", format="%.1f"),
+                        "Radius (m)": st.column_config.NumberColumn("Bán kính (m)", format="%.1f"),
+                        "Carbody Cwt (ton)": st.column_config.NumberColumn("Carbody Cwt (T)", format="%.1f"),
+                    },
+                    width="stretch",
+                    key="cwt_editor"
+                )
             
             st.markdown("---")
             btn_text = "💾 Cập nhật Model" if edit_id else "💾 Lưu Cẩu Mới"
@@ -367,10 +403,12 @@ def render_crane_management():
                         ),
                         counterweight_configs=[
                             CounterweightConfig(
-                                name=f"Standard {cwt_mass}T",
-                                total_mass_ton=cwt_mass,
-                                radius_m=cwt_rad
+                                name=str(row["Name"]),
+                                total_mass_ton=float(row["Mass (ton)"]),
+                                radius_m=float(row["Radius (m)"]),
+                                carbody_cwt_ton=float(row["Carbody Cwt (ton)"])
                             )
+                            for row in edited_cwts if row["Name"]
                         ],
                         boom_system=BoomSystem(
                             pivot_offset_x_m=pivot_x,
@@ -740,6 +778,8 @@ with st.sidebar:
     with st.expander("3. TẢI TRỌNG & BÁN KÍNH", expanded=True):
         load_mass = st.number_input("Tải trọng (Tấn)", value=50.0, step=1.0)
         radius = st.number_input("Bán kính (m)", value=12.0, step=0.5)
+        load_height_z = st.number_input("Chiều cao nâng Z (m)", value=0.0, step=1.0, help="Chiều cao cần đưa hàng lên")
+        slew_angle = st.slider("Góc quay (độ)", 0, 360, 0, step=5)
 
     with st.expander("4. THÔNG SỐ ĐẤT", expanded=True):
         soil_ks = st.number_input("Hệ số nền Ks (kN/m3)", value=10000.0, step=1000.0)
@@ -756,15 +796,6 @@ with st.sidebar:
                 pred_ks, pred_p = ai_agent.OfflineAIAgent().predict_soil_params(soil_type, moisture)
                 st.success(f"Gợi ý: Ks={pred_ks:.0f}, P_allow={pred_p:.1f}")
 
-    st.markdown("---")
-    st.markdown("**GÓC QUAY (Slew Angle)**")
-    
-    col_sl_1, col_sl_2 = st.columns([2, 1])
-    
-    with col_sl_1: # Fixed indentation
-
-        # Slider interaction
-        slew_angle = st.slider("Góc quay (độ)", 0, 360, 0, step=5)
 
 
 # PROCESS DATA
@@ -775,6 +806,12 @@ specs['slope_roll_y_pct'] = slope_y
 physics_engine = AdvancedCranePhysics(specs)
 reach = min(radius - specs['pivot_x'], boom_len * 0.99)
 boom_angle = np.degrees(np.arccos(reach/boom_len))
+
+# [NEW] Check Tip Height
+tip_height = specs['pivot_z'] + boom_len * np.sin(np.radians(boom_angle))
+if tip_height < load_height_z:
+    st.warning(f"⚠️ Chiều cao đầu cần ({tip_height:.1f}m) thấp hơn chiều cao nâng yêu cầu ({load_height_z}m)!")
+
 phys_res = physics_engine.calculate_state(load_mass, boom_angle, 90 - slew_angle)
 
 mesh_gen = AdvancedMeshGenerator(mesh_size=0.05)
@@ -801,6 +838,12 @@ except Exception as e:
     st.error(f"Lỗi nghiêm trọng: {str(e)}")
     st.stop()
 
+# Initialize AI Learning (Moved up)
+from backend.ai_learning import CraneAILearning
+if 'ai_learner' not in st.session_state:
+    st.session_state.ai_learner = CraneAILearning()
+learner = st.session_state.ai_learner
+
 # DASHBOARD HEADER (UPDATED PHASE 2)
 p_max = sol_res['pressure_max'] / G_CONST
 sliding_force = np.sqrt(phys_res['Fx_slide_ton']**2 + phys_res['Fy_slide_ton']**2)
@@ -811,7 +854,7 @@ sf_bearing = limit_pressure / p_max # Hệ số an toàn chịu tải nền
 n_iter = sol_res.get('solver_iters', 0)
 cost_val = sol_res.get('solver_cost', 0)
 
-k1, k2, k3, k4, k5, k6 = st.columns(6)
+k1, k2, k3, k4, k5 = st.columns([1, 1, 1, 1, 1.5])
 with k1: 
     st.metric("ÁP LỰC MAX", f"{p_max:.2f} t/m²", 
              delta=f"{limit_pressure-p_max:.1f} dư", 
@@ -819,19 +862,69 @@ with k1:
 with k2: 
     st.metric("TỔNG TẢI", f"{phys_res['V_total_ton']:.1f} T")
 with k3: 
-    st.metric("SOLVER AI", f"{n_iter} iters", 
-             delta="Converged" if cost_val < 1e-3 else "Low Acc",
-             delta_color="normal" if cost_val < 1e-3 else "off")
-with k4: 
     st.metric("MÔ-MEN", f"{phys_res['Mz_yaw_Tm']:.1f} Tm")
-with k5: 
-    st.metric("HS TRƯỢT NỀN ĐẤT", f"{sf_slide:.2f}", 
-             delta="An toàn" if sf_slide>1.2 else "Nguy hiểm", 
-             delta_color="normal" if sf_slide>1.2 else "inverse")
-with k6: 
+with k4: 
     st.metric("HS AN TOÀN NỀN", f"{sf_bearing:.2f}", 
              delta="Đủ tải" if sf_bearing>1.0 else "Sụt lún", 
              delta_color="normal" if sf_bearing>1.0 else "inverse")
+with k5:
+    if st.button("🤖 AUTO AI CALCULATION", help="Chạy mô phỏng chuyên sâu: 360 độ, tải trọng & bán kính ngẫu nhiên"):
+        with st.spinner("Đang chạy mô phỏng Deep Learning (0-360°)..."):
+            # Get limits
+            crane_obj = manager.get_crane(crane_id)
+            max_cap = crane_obj.max_capacity_ton if crane_obj else 100.0
+            
+            sim_angles = range(0, 360, 1) # Step 1 degree
+            max_p_sim = 0
+            min_sf_sim = 999
+            valid_count = 0
+            
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            for i, ang in enumerate(sim_angles):
+                # Generate Random Scenario
+                # Load: 5% -> 100% Max Cap
+                sim_load = random.uniform(max_cap * 0.05, max_cap)
+                # Radius: 3m -> 70% Boom Len
+                sim_radius = random.uniform(3.0, boom_len * 0.7)
+                
+                status_text.text(f"Simulating: Angle {ang}°, Load {sim_load:.1f}t, Rad {sim_radius:.1f}m")
+                
+                # Calculate Physics for this scenario
+                # Need to recalc boom angle for new radius
+                sim_reach = min(sim_radius - specs['pivot_x'], boom_len * 0.99)
+                sim_boom_angle = np.degrees(np.arccos(sim_reach/boom_len))
+                
+                p_res_sim = physics_engine.calculate_state(sim_load, sim_boom_angle, 90 - ang)
+                
+                # Sim Solver
+                # We use the CURRENT ground specs (soil_ks) for simulation
+                s_res_sim, err_sim = solver.solve_equilibrium(solve_specs, p_res_sim)
+                
+                if not err_sim:
+                    p_val = s_res_sim['pressure_max'] / G_CONST
+                    sf_val = limit_pressure / p_val if p_val > 0 else 999
+                    
+                    max_p_sim = max(max_p_sim, p_val)
+                    min_sf_sim = min(min_sf_sim, sf_val)
+                    valid_count += 1
+                    
+                    # Log to AI
+                    log_inputs = {
+                        'load_mass': sim_load, 'radius': sim_radius, 'boom_len': boom_len,
+                        'slew_angle': ang, 'soil_ks': soil_ks, 'cwt_mass': specs['cwt_mass'],
+                        'mat_L': solve_specs['track_L'], 'mat_W': solve_specs['track_W']
+                    }
+                    log_outputs = {'p_max': p_val, 'safety_factor': sf_val}
+                    learner.log_calculation(log_inputs, log_outputs)
+                
+                progress_bar.progress((i + 1) / len(sim_angles))
+            
+            status_text.empty()
+            # Train model
+            train_msg = learner.train_model()
+            st.success(f"✅ Deep Simulation Hoàn tất! {valid_count} kịch bản. Max P: {max_p_sim:.2f}, Min SF: {min_sf_sim:.2f}. {train_msg}")
 
 st.markdown("---")
 
@@ -907,12 +1000,7 @@ with c_stat2:
 # --- AI AGENT SECTION (BELOW DASHBOARD) ---
 st.markdown("---")
 
-# Initialize AI Learning
-from backend.ai_learning import CraneAILearning
-if 'ai_learner' not in st.session_state:
-    st.session_state.ai_learner = CraneAILearning()
-
-learner = st.session_state.ai_learner
+# Learner already initialized at top
 
 # LOGGING LOGIC (Auto-log if calculation successful)
 if 'sol_res' in locals() and sol_res and not err:
@@ -923,7 +1011,9 @@ if 'sol_res' in locals() and sol_res and not err:
         'boom_len': boom_len,
         'slew_angle': slew_angle,
         'soil_ks': soil_ks,
-        'cwt_mass': specs['cwt_mass']
+        'cwt_mass': specs['cwt_mass'],
+        'mat_L': solve_specs['track_L'],
+        'mat_W': solve_specs['track_W']
     }
     log_outputs = {
         'p_max': p_max,
@@ -942,7 +1032,9 @@ if learner.is_trained:
             'boom_len': boom_len,
             'slew_angle': slew_angle,
             'soil_ks': soil_ks,
-            'cwt_mass': specs['cwt_mass']
+            'cwt_mass': specs['cwt_mass'],
+            'mat_L': solve_specs['track_L'],
+            'mat_W': solve_specs['track_W']
         }
         pred = learner.predict(pred_inputs)
         if pred:
@@ -954,6 +1046,7 @@ if learner.is_trained:
 st.header("🤖 AI AGENT (OFFLINE)")
 
 # Instantiate the agent
+# Instantiate the agent
 agent = ai_agent.OfflineAIAgent()
 
 tab1, tab2, tab3 = st.tabs(["Tối ưu hóa Cấu hình", "Phân tích Rủi ro", "🧠 AI Self-Learning"])
@@ -962,6 +1055,7 @@ with tab1:
     st.write("Tự động tìm kích thước tấm lót tối ưu để tiết kiệm chi phí.")
     if st.button("🚀 Chạy Tối ưu hóa (Bayesian Opt)"):
         with st.spinner("Đang chạy mô phỏng AI..."):
+            # Use full specs from main logic
             opt_res, msg = agent.optimize_configuration(
                 specs, load_mass, radius, boom_angle, slew_angle, soil_ks, limit_pressure
             )
@@ -979,6 +1073,7 @@ with tab2:
     st.write("Chạy mô phỏng Monte Carlo (100 lần) để đánh giá xác suất sự cố.")
     if st.button("🎲 Chạy Phân tích Rủi ro"):
         with st.spinner("Đang chạy 100 mô phỏng..."):
+            # Use full specs
             risk_res = agent.run_risk_analysis(
                 specs, load_mass, radius, boom_angle, slew_angle, soil_ks, limit_pressure, n_simulations=100
             )
@@ -1012,5 +1107,13 @@ with tab3:
             st.success(res)
         else:
             st.error(res)
+            st.error(res)
+
+# --- FOOTER ---
+st.markdown("""
+    <div style="text-align: center; padding: 20px; margin-top: 50px; border-top: 1px solid #e2e8f0; color: #94a3b8; font-size: 0.8rem;">
+        develop by <b>SMC Services and Engineering</b>
+    </div>
+""", unsafe_allow_html=True)
 
 

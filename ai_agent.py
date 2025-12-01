@@ -21,7 +21,11 @@ except ImportError:
 from crane_physics import AdvancedCranePhysics
 from mesh_engine import AdvancedMeshGenerator
 from solver_engine import SoilStructureSolver
+from crane_physics import AdvancedCranePhysics
+from mesh_engine import AdvancedMeshGenerator
+from solver_engine import SoilStructureSolver
 from unified_data import get_processed_specs
+from backend.ai_learning import CraneAILearning
 
 class OfflineAIAgent:
     """
@@ -34,6 +38,8 @@ class OfflineAIAgent:
     def __init__(self):
         self.soil_model = None
         self._train_dummy_soil_model()
+        # Integration: Load Learning AI
+        self.learner = CraneAILearning()
 
     def _train_dummy_soil_model(self):
         """
@@ -78,6 +84,30 @@ class OfflineAIAgent:
         pred = self.soil_model.predict([[t_id, m_id]])[0]
         return pred[0], pred[1] # Ks, P_allow
 
+    def predict_pressure_smart(self, load_mass, radius, boom_len, slew_angle, soil_ks, cwt_mass, mat_L, mat_W):
+        """
+        Dự đoán áp lực sử dụng mô hình AI đã học (Learning AI).
+        Nhanh hơn và chính xác hơn theo thời gian so với tính toán vật lý thuần túy.
+        """
+        if not self.learner.is_trained:
+            return None, "Mô hình AI chưa được huấn luyện đủ dữ liệu."
+            
+        inputs = {
+            'load_mass': load_mass,
+            'radius': radius,
+            'boom_len': boom_len,
+            'slew_angle': slew_angle,
+            'soil_ks': soil_ks,
+            'cwt_mass': cwt_mass,
+            'mat_L': mat_L,
+            'mat_W': mat_W
+        }
+        
+        res = self.learner.predict(inputs)
+        if res:
+            return res['p_max'], None
+        return None, "Lỗi dự đoán AI"
+
     def optimize_configuration(self, base_specs, load_mass, radius, boom_angle, slew_angle, soil_ks, target_p_allow):
         """
         Tìm cấu hình Mat (L, W) tối ưu để P_max <= P_allow với chi phí thấp nhất.
@@ -114,6 +144,28 @@ class OfflineAIAgent:
             sim_W = max(solve_specs['track_W'], mat_W)
             
             # Tạo Mesh
+            # Optimization: Use AI Model if available and trained
+            if self.learner.is_trained:
+                # Use AI prediction as a fast surrogate
+                # Note: This is an approximation. For final validation, we might want to run physics once at the end.
+                inputs = {
+                    'load_mass': load_mass, 'radius': radius, 'boom_len': base_specs['boom_len'],
+                    'slew_angle': slew_angle, 'soil_ks': soil_ks, 'cwt_mass': base_specs['cwt_mass'],
+                    'mat_L': mat_L, 'mat_W': mat_W
+                }
+                pred_res = self.learner.predict(inputs)
+                if pred_res:
+                    p_max = pred_res['p_max']
+                    
+                    # Cost & Penalty Logic (Same as below)
+                    cost = mat_L * mat_W 
+                    if p_max > target_p_allow:
+                        penalty = (p_max - target_p_allow) * 1000
+                    else:
+                        penalty = 0
+                    return cost + penalty
+
+            # Fallback to Physics Engine if AI not trained
             mesh_gen = AdvancedMeshGenerator(mesh_size=0.5) # Coarse mesh for speed optimization
             mesh_gen.create_rectangular_mesh(sim_L*1.5, solve_specs['track_gauge']*2.0, default_Ks=soil_ks)
             

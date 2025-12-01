@@ -5,4 +5,3 @@ matplotlib
 streamlit
 scikit-learn
 scikit-optimize
-pydantic

@@ -117,11 +117,14 @@ class OfflineAIAgent:
             return None, "Thư viện scikit-optimize chưa được cài đặt."
 
         # 1. Định nghĩa không gian tìm kiếm (Search Space)
-        # Mat Length: 2.0m -> 12.0m
-        # Mat Width: 1.0m -> 4.0m
+        # Mat Length: Track_L -> Track_L + 6m
+        # Mat Width: Track_W -> Track_W + 3m
+        min_L = base_specs.get('track_L', 2.0)
+        min_W = base_specs.get('track_W', 0.8)
+        
         space = [
-            Real(2.0, 12.0, name='mat_L'),
-            Real(1.0, 4.0, name='mat_W')
+            Real(min_L, min_L + 6.0, name='mat_L'),
+            Real(min_W, min_W + 3.0, name='mat_W')
         ]
 
         # 2. Chuẩn bị Physics State (Tính 1 lần vì Load không đổi)
